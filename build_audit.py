@@ -144,11 +144,37 @@ def _set_ppt_hallazgo(pptx_path: str, slide_index_1based: int, shape_substr: str
 
 
 # ======================================================================
+# Column aliases: SF desktop CSVs use different names than MCP exports
+# ======================================================================
+COLUMN_ALIASES = {
+    "desde": "Fuente",
+    "hasta": "Destino",
+    "código de respuesta": "Código de estado",
+    "codigo de respuesta": "Código de estado",
+    "tamaño": "Tamaño (bytes)",
+    "transferido": "Transferido (bytes)",
+    "rastreabilidad de enlaces": "Rastreabilidad",
+    "tipo de ruta": "Tipo de ruta",
+    "ruta del enlace": "Ruta del enlace",
+    "origen del enlace": "Origen del enlace",
+    "posición del enlace": "Posición del enlace",
+    "texto ancla": "Ancla",
+    "texto alt": "Texto ALT",
+    "seguir": "Seguir",
+    "destino": "Destino",
+}
+
+def _normalize_col(name: str) -> str:
+    """Normalize column name using aliases."""
+    return COLUMN_ALIASES.get(name.lower().strip(), name)
+
+
+# ======================================================================
 # Data processing
 # ======================================================================
 
 def _read_file(path: Path) -> list[dict]:
-    """Auto-detect NDJSON or CSV, return list of dicts."""
+    """Auto-detect NDJSON or CSV, return list of dicts with normalized column names."""
     rows = []
     if not path.exists():
         return rows
@@ -161,7 +187,9 @@ def _read_file(path: Path) -> list[dict]:
                 if not line:
                     continue
                 try:
-                    rows.append(json.loads(line))
+                    row = json.loads(line)
+                    # Normalize keys
+                    rows.append({_normalize_col(k): v for k, v in row.items()})
                 except json.JSONDecodeError:
                     continue
     elif ext == ".csv":
@@ -172,7 +200,8 @@ def _read_file(path: Path) -> list[dict]:
                     for row in reader:
                         clean = {}
                         for k, v in row.items():
-                            clean[k.strip()] = v.strip() if isinstance(v, str) else v
+                            norm_key = _normalize_col(k.strip() if k else k)
+                            clean[norm_key] = v.strip() if isinstance(v, str) else v
                         rows.append(clean)
                 if rows:
                     break
@@ -182,9 +211,9 @@ def _read_file(path: Path) -> list[dict]:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
             if isinstance(data, list):
-                rows = data
-            else:
-                rows = [data]
+                rows = [{_normalize_col(k): v for k, v in r.items()} for r in data if isinstance(r, dict)]
+            elif isinstance(data, dict):
+                rows = [{_normalize_col(k): v for k, v in data.items()}]
     return rows
 
 
@@ -206,7 +235,7 @@ def _get_columns(path: Path) -> frozenset:
                 with open(path, encoding=encoding, newline="") as f:
                     reader = csv.reader(f)
                     headers_raw = next(reader, [])
-                    headers = frozenset(h.strip() for h in headers_raw if h.strip())
+                    headers = frozenset(_normalize_col(h.strip()) for h in headers_raw if h.strip())
                     return headers
             except (UnicodeDecodeError, csv.Error):
                 continue
@@ -673,6 +702,12 @@ _register(["Fuente", "Destino", "Texto ALT", "Longitud", "Tipo de ruta", "Posici
 
 _register(["Fuente", "Destino", "Ancla"],
           None, None, None)  # ambiguous
+    
+# Detalle Errores 404 from SF desktop bulk export (Desde/Hasta → Fuente/Destino)
+_register(["Fuente", "Destino", "Ancla", "Código de estado"],
+          "Detalle Errores 404",
+          ["URL 404", "URL Origen", "Texto ancla"],
+          ["Destino", "Fuente", "Ancla"])
 
 # --- Signatures from PageSpeed SEO element exports (Dirección-based, aggregate) ---
 _register(["Dirección", "Ahorro al minimizar JavaScript (ms)", "Ahorro al minimizar JavaScript (Bytes)"],
@@ -695,6 +730,12 @@ _register(["Página fuente", "URL", "Tamaño (bytes)", "Posible ahorro (bytes)"]
           "PS Minificar JS",
           ["URL Página", "Archivo JS a minificar", "Tamaño (bytes)", "Ahorro estimado (bytes)"],
           ["Página fuente", "URL", "Tamaño (bytes)", "Posible ahorro (bytes)"])
+
+# PageSpeed reports from SF desktop (Spanish column names)
+_register(["Página fuente", "URL", "Tamaño (bytes)", "Posible ahorro (bytes)", "Motivo"],
+          "PS Mejorar entrega imágenes",
+          ["URL Página", "Imagen a optimizar", "Tamaño (bytes)", "Ahorro (bytes)", "Motivo"],
+          ["Página fuente", "URL", "Tamaño (bytes)", "Posible ahorro (bytes)", "Motivo"])
 
 _register(["Página fuente", "URL", "Posible ahorro (bytes)", "Motivo"],
           "PS Mejorar entrega imágenes",
