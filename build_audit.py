@@ -906,34 +906,43 @@ def _detect_assignments(data_dir: str, mapping: dict = None) -> tuple[dict[str, 
                         if e["sheet"] == sheet:
                             assignment = (sheet, e["headers"], e["col_map"], str(fpath))
                             break
-        # 3.5 Data sampling: read actual values to determine sheet
+        
+        # 2. Check column signatures (subset match: file columns must CONTAIN the signature columns)
+        if not assignment:
+            entries = []
+            for sig_key, sig_entries in SIGNATURES.items():
+                if sig_key.issubset(cols):
+                    entries.extend([(len(sig_key), e) for e in sig_entries if e["sheet"] is not None])
+            # Pick the most specific match (longest signature = most columns matched)
+            if entries:
+                entries.sort(key=lambda x: -x[0])  # Descending by specificity
+                best_len = entries[0][0]
+                # Get all entries at the same specificity level
+                best_matches = [e for l, e in entries if l == best_len]
+                if len(best_matches) == 1:
+                    e = best_matches[0]
+                    assignment = (e["sheet"], e["headers"], e["col_map"], str(fpath))
+                elif len(best_matches) > 1:
+                    # Same specificity but multiple matches — try filename hint
+                    hint = _hint_from_filename(fname)
+                    if hint:
+                        for e in best_matches:
+                            if e["sheet"] == hint:
+                                assignment = (e["sheet"], e["headers"], e["col_map"], str(fpath))
+                                break
+        
+        # 3. Data sampling: read actual values to determine sheet
         if not assignment:
             detected = _sample_detect(fpath)
             if detected:
-                first_col = sorted(cols)[0] if cols else "Dirección"
+                first_col = "Dirección" if "Dirección" in cols else ("Fuente" if "Fuente" in cols else (sorted(cols)[0] if cols else "Dirección"))
                 assignment = (detected, ["URL"], [first_col], str(fpath))
         
-        # 2. Check column signatures
-        if not assignment:
-            entries = SIGNATURES.get(cols, [])
-            unique_entries = [e for e in entries if e["sheet"] is not None]
-            if len(unique_entries) == 1:
-                e = unique_entries[0]
-                assignment = (e["sheet"], e["headers"], e["col_map"], str(fpath))
-            elif len(unique_entries) > 1:
-                # Multiple sheets match same columns — try filename hint
-                hint = _hint_from_filename(fname)
-                if hint:
-                    for e in unique_entries:
-                        if e["sheet"] == hint:
-                            assignment = (e["sheet"], e["headers"], e["col_map"], str(fpath))
-                            break
-        
-        # 3. Try filename hint for any unmatched (direct match, no signature needed)
+        # 4. Try filename hint for any unmatched (direct match, no signature needed)
         if not assignment:
             hint = _hint_from_filename(fname)
             if hint:
-                first_col = sorted(cols)[0] if cols else "Dirección"
+                first_col = "Dirección" if "Dirección" in cols else ("Fuente" if "Fuente" in cols else (sorted(cols)[0] if cols else "Dirección"))
                 assignment = (hint, ["URL"], [first_col], str(fpath))
         
         if assignment:
