@@ -11,7 +11,7 @@ Genera entregables Excel + PowerPoint para auditorías SEO siguiendo la metodolo
 5. Genera el PowerPoint con conteos actualizados y links `VER`
 6. Devuelve ambos archivos + `mapping.json` para reutilizar en futuros crawls
 
-## V3 — Detección inteligente
+## V4 — Detección inteligente (columnas + data sampling)
 
 El sistema identifica archivos por su **firma de columnas**:
 
@@ -21,7 +21,24 @@ CSV con Página fuente, URL, Posible ahorro... → "es un reporte de PageSpeed"
 CSV con Dirección, Indexabilidad → "es un archivo 'Falta', ver nombre"
 ```
 
-Si no puede determinarlo, muestra una pantalla de ayuda con la plantilla `mapping.json`.
+**Compatibilidad total SF Desktop → MCP**: los CSV exportados desde el desktop de SF usan nombres de columna distintos (`Desde`, `Hasta`, `Código de respuesta`). El sistema los normaliza automáticamente para que coincidan con las firmas.
+
+Si no puede determinarlo, **no bloquea** — muestra una pantalla con dropdowns agrupados por RICOPA (Rastreo/Indexación/On Page/Contenido) para que selecciones manualmente. El `mapping.json` generado al finalizar guarda tus elecciones para el siguiente crawl.
+
+### Data sampling
+
+Lee las primeras 10 filas del CSV y decide por los valores reales:
+- Todas las filas con `Longitud > 60` → Metatítulo — Largo
+- Ningún `Título 1` presente → Metatítulo — Falta
+- Columnas `Desde`/`Hasta`/`Código de respuesta` → Detalle Errores 404 (normalizado a Fuente/Destino/Código de estado)
+
+### Derivación desde Todo
+
+Si subís un CSV "Todo" de un elemento, el dropdown ofrece opciones especiales:
+- `📋 Títulos → derivar hojas` (genera Falta, Largo, Corto, Duplicado)
+- `📋 Meta descripción → derivar hojas`
+- `📋 H1 → derivar hojas`
+- `📋 Imágenes → derivar hojas` (+100kb, sin ALT, sin size)
 
 ## Uso local
 
