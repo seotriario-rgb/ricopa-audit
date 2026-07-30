@@ -352,7 +352,7 @@ def _render_help_screen(job_id, client, month, year, unmatched):
 <div class="card">
     <h2><span>{len(unmatched)} archivos</span> necesitan ayuda</h2>
     <p class="muted">{client} — {month} {year} • Selecciona a que hoja pertenece cada archivo</p>
-    <div class="info">Las hojas estan agrupadas por RICOPA. Usa "Archivos Todo" para CSVs que contienen todos los datos de un elemento y necesitan derivarse en varias hojas.</div>
+    <div class="info">Las hojas estan agrupadas por RICOPA. Usa "Archivos Todo" para CSVs que contienen todos los datos de un elemento y necesitan derivarse en varias hojas. Varios archivos pueden ir a la misma hoja (ej: Falta texto ALT + Falta atributo ALT → Imagenes sin ALT text).</div>
     <form action="/audit/assign/{job_id}" method="POST">
         <input type="hidden" name="client" value="{client}">
         <input type="hidden" name="month" value="{month}">

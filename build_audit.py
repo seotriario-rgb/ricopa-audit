@@ -396,6 +396,7 @@ ELEMENT_FINGERPRINTS = {
     "title": frozenset(["Dirección", "Título 1", "Longitud del título 1", "Ancho de píxeles del título 1"]),
     "meta": frozenset(["Dirección", "Meta description 1", "Longitud de la meta description 1", "Ancho de píxeles de la meta description 1"]),
     "h1": frozenset(["Dirección", "H1-1", "Longitud de H1-1"]),
+    "images": frozenset(["Dirección", "Dimensiones", "Tipo de contenido", "Enlaces de entrada de imágenes"]),
 }
 
 def _detect_element_type(columns: frozenset) -> str | None:
@@ -504,18 +505,17 @@ def _derive_subsheets(rows: list[dict], element_type: str) -> dict:
             )
     
     elif element_type == "images":
-        # Imágenes — +100kb
-        over100 = [r for r in rows if int(r.get("Tamaño (Bytes)", 0) or 0) > 100000]
-        if over100:
-            results["Imágenes +100kb"] = (
-                ["Dirección", "Tipo", "Tamaño (kB)", "Dimensiones", "# enlaces entrada"],
-                [[r.get("Dirección",""), r.get("Tipo de contenido",""), r.get("Tamaño (Bytes)",""),
-                  r.get("Dimensiones",""), r.get("Enlaces de entrada de imágenes","")] for r in over100]
-            )
-        # Imágenes — sin ALT (both Falta texto ALT and Falta atributo ALT)
-        # If "Texto ALT" column exists and is empty, or if Enlaces de entrada de imágenes exists with high count
-        sin_alt = [r for r in rows if not (r.get("Texto ALT") or "").strip() 
-                   or r.get("Enlaces de entrada de imágenes") and not (r.get("Texto ALT") or "").strip()]
+        # Imágenes — +100kb (skip if Tamaño column not present)
+        if "Tamaño (Bytes)" in set(r.keys() for r in rows[:1]):
+            over100 = [r for r in rows if int(r.get("Tamaño (Bytes)", 0) or 0) > 100000]
+            if over100:
+                results["Imágenes +100kb"] = (
+                    ["Dirección", "Tipo", "Tamaño (kB)", "Dimensiones", "# enlaces entrada"],
+                    [[r.get("Dirección",""), r.get("Tipo de contenido",""), r.get("Tamaño (Bytes)",""),
+                      r.get("Dimensiones",""), r.get("Enlaces de entrada de imágenes","")] for r in over100]
+                )
+        # Imágenes — sin ALT (both Falta texto ALT and Falta atributo ALT go here)
+        sin_alt = [r for r in rows if not (r.get("Texto ALT") or "").strip()]
         if sin_alt:
             results["Imágenes sin ALT text"] = (
                 ["Dirección", "Tipo", "# páginas donde aparece"],
@@ -523,7 +523,7 @@ def _derive_subsheets(rows: list[dict], element_type: str) -> dict:
                   r.get("Enlaces de entrada de imágenes","")] for r in sin_alt]
             )
         # Imágenes — sin atributo tamaño
-        sin_size = [r for r in rows if not r.get("Dimensiones") or r.get("Dimensiones") in ("", "None", None)]
+        sin_size = [r for r in rows if not r.get("Dimensiones") or str(r.get("Dimensiones","")).lower() in ("", "none")]
         if sin_size:
             results["Imágenes sin atributo tamaño"] = (
                 ["Dirección", "Tipo", "Dimensiones"],
