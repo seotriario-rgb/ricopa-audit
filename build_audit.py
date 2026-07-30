@@ -334,11 +334,15 @@ def _sample_detect(fpath: Path) -> str | None:
             return "Imágenes sin atributo tamaño"
         return None
     
-    # --- Images: ALT missing ---
+    # --- Images: ALT missing (both Falta texto ALT and Falta atributo ALT) ---
     if frozenset(["Dirección", "Texto ALT"]) <= cols:
         alts = [r.get("Texto ALT", "") for r in sample if r.get("Texto ALT", "").strip()]
         if not alts:
             return "Imágenes sin ALT text"
+    
+    # --- Images: ALT from SEO element export (Dirección, Tipo, Enlaces de entrada) ---
+    if frozenset(["Dirección", "Enlaces de entrada de imágenes"]) <= cols:
+        return "Imágenes sin ALT text"
         return None
     
     # --- Canonicals ---

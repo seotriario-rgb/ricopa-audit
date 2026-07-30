@@ -22,6 +22,16 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 
 ALL_SHEETS = [s for s in SHEET_ORDER if s not in ("Matriz de entendimiento", "Resumen")]
 
+# Grouped options for the dropdown: special "Todo" derivations + individual sheets
+DROPDOWN_OPTIONS = [
+    ("", "-- Seleccionar hoja --", ""),
+    ("__derive_title", "📋 Títulos (Todo) → derivar Falta, Largo, Corto, Duplicado", "Metatítulo — Falta"),
+    ("__derive_meta", "📋 Meta descripción (Todo) → derivar Falta, Larga, Corta, Duplicada", "Metadescripción — Falta"),
+    ("__derive_h1", "📋 H1 (Todo) → derivar Falta, Largo, Duplicado", "H1 — Falta"),
+    ("__derive_images", "📋 Imágenes (Todo) → derivar +100kb, sin ALT, sin size", "Imágenes +100kb"),
+    ("", "─── Hojas individuales ───", ""),
+] + [(s, s, s) for s in ALL_SHEETS]
+
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
@@ -128,7 +138,21 @@ async def process_assign(request: Request, job_id: str):
     for key, value in form.items():
         if key.startswith("assign__") and value.strip():
             fname = key[len("assign__"):]
-            mapping[fname] = value.strip()
+            # Handle __derive_* special options
+            derive_map = {
+                "__derive_title": "title",
+                "__derive_meta": "meta",
+                "__derive_h1": "h1",
+                "__derive_images": "images",
+            }
+            if value.strip().startswith("__derive_"):
+                elem = derive_map.get(value.strip())
+                if elem:
+                    from build_audit import ELEMENT_FINGERPRINTS, _detect_element_type, _read_file, _derive_subsheets, _filter_by_domain, _dedup_by_key
+                    # Mark this as a Todo file for derivation
+                    mapping[fname] = f"__derive_{elem}"
+            else:
+                mapping[fname] = value.strip()
 
     if not mapping:
         return HTMLResponse(content="<h3>No se seleccionaron hojas — volve e intentalo de nuevo</h3>", status_code=400)
@@ -157,6 +181,32 @@ async def _build_and_render(job_id, client, month, year, mapping):
                     shutil.copyfileobj(src, dst)
 
     # Save mapping for this attempt
+    # Pre-process __derive_* entries: read files, derive sub-sheets, add to mapping
+    derive_files = {k: v for k, v in mapping.items() if isinstance(v, str) and v.startswith("__derive_")}
+    for fname, derive_type in derive_files.items():
+        fpath = data_dir / fname
+        if not fpath.exists():
+            continue
+        from build_audit import _read_file, _derive_subsheets, _filter_by_domain, _dedup_by_key
+        elem = derive_type.replace("__derive_", "")
+        domain = _guess_domain(data_dir, client)
+        rows = _read_file(fpath)
+        if rows:
+            rows = _dedup_by_key(rows, "Dirección")
+            derived = _derive_subsheets(rows, elem)
+            for sheet_name, (headers, rows_out) in derived.items():
+                # Write derived rows to temporary NDJSON
+                tmp_f = job_dir / f"__derived__{sheet_name}.ndjson"
+                with open(tmp_f, "w", encoding="utf-8") as tf:
+                    for row in rows_out:
+                        d = {h: row[i] if i < len(row) else "" for i, h in enumerate(headers)}
+                        json.dump(d, tf, ensure_ascii=False)
+                        tf.write("\n")
+                # Point mapping to temp file
+                mapping[tmp_f.name] = sheet_name
+        # Remove the __derive_ placeholder
+        del mapping[fname]
+    
     with open(data_dir / "mapping.json", "w", encoding="utf-8") as f:
         json.dump(mapping, f, ensure_ascii=False, indent=2)
 
@@ -219,7 +269,24 @@ async def _build_and_render(job_id, client, month, year, mapping):
 def _render_help_screen(job_id, client, month, year, unmatched):
     """Show unmatched files with dropdowns for manual sheet assignment."""
     rows = ""
-    sheet_options = "\n".join(f'<option value="{s}">{s}</option>' for s in ALL_SHEETS)
+    # Build options HTML with optgroup for Todo derivations vs individual sheets
+    todo_opts = []
+    sheet_opts = []
+    for value, label, _ in DROPDOWN_OPTIONS:
+        if value == "" and label == "":
+            continue
+        if value == "" or value == "─── Hojas individuales ───":
+            continue
+        if value.startswith("__derive_"):
+            todo_opts.append(f'<option value="{value}">{label}</option>')
+        else:
+            sheet_opts.append(f'<option value="{value}">{label}</option>')
+    
+    options_html = (
+        '<option value="">-- Seleccionar hoja --</option>'
+        + '<optgroup label="Archivos Todo (derivan varias hojas)">' + "".join(todo_opts) + '</optgroup>'
+        + '<optgroup label="Hojas individuales">' + "".join(sheet_opts) + '</optgroup>'
+    )
     
     for i, u in enumerate(unmatched):
         hint = u.get("hint") or ""
@@ -231,10 +298,8 @@ def _render_help_screen(job_id, client, month, year, unmatched):
             <td style='font-size:12px;word-break:break-all;max-width:280px'>{u['file']}</td>
             <td style='font-size:11px;color:#94a3b8'>{columns_str}{'...' if len(u['columns']) > 5 else ''}</td>
             <td>
-                <select name="assign__{u['file']}" style='padding:6px 10px;border-radius:6px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;width:100%;min-width:200px'>
-                    <option value="">-- Seleccionar hoja --</option>
-                    {hint_selected}
-                    {sheet_options}
+                <select name="assign__{u['file']}" style='padding:6px 10px;border-radius:6px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;width:100%;min-width:220px'>
+                    {options_html}
                 </select>
             </td>
         </tr>"""
