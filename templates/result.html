@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Auditoría completada — {{CLIENT}}</title>
+    <style>
+        :root { --bg: #0f172a; --card: #1e293b; --border: #334155; --text: #e2e8f0; --muted: #94a3b8; --accent: #3b82f6; --accent-hover: #2563eb; --success: #22c55e; --green-bg: #052e16; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+        .container { max-width: 640px; width: 100%; }
+        .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 32px; }
+        h1 { font-size: 22px; margin-bottom: 4px; }
+        .green { color: var(--success); }
+        .muted { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+        .success-banner { background: var(--green-bg); border: 1px solid var(--success); border-radius: 8px; padding: 16px; margin-bottom: 24px; }
+        .success-banner .big { font-size: 28px; font-weight: 700; color: var(--success); }
+        .downloads { display: flex; gap: 12px; margin-bottom: 24px; }
+        .download-btn { flex: 1; padding: 14px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 14px; text-align: center; transition: background 0.2s; }
+        .xlsx-btn { background: #166534; color: var(--success); }
+        .xlsx-btn:hover { background: #15803d; }
+        .pptx-btn { background: #1e3a5f; color: #60a5fa; }
+        .pptx-btn:hover { background: #1e40af; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+        th, td { padding: 8px 12px; text-align: left; font-size: 13px; border-bottom: 1px solid var(--border); }
+        th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; }
+        td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+        .back { color: var(--muted); font-size: 13px; }
+        .back a { color: var(--accent); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <h1>Auditoría <span class="green">completada</span></h1>
+            <p class="muted">{{CLIENT}} — {{MES}} {{AÑO}} · {{TOTAL}} hallazgos totales</p>
+
+            <div class="success-banner">
+                <p class="big">✓ {{TOTAL}}</p>
+                <p style="color: var(--muted); font-size: 13px;">hallazgos encontrados en {{CLIENT}}</p>
+            </div>
+
+            <div class="downloads">
+                <a href="/download/{{JOB_ID}}/xlsx" class="download-btn xlsx-btn">📊 Descargar Excel</a>
+                <a href="/download/{{JOB_ID}}/pptx" class="download-btn pptx-btn">📽️ Descargar PowerPoint</a>
+            </div>
+
+            <table>
+                <thead><tr><th>Hoja</th><th>Hallazgos</th></tr></thead>
+                <tbody>{{SUMMARY_ROWS}}</tbody>
+            </table>
+
+            <p class="back"><a href="/">← Nueva auditoría</a></p>
+        </div>
+    </div>
+</body>
+</html>
