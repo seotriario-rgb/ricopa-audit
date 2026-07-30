@@ -220,21 +220,23 @@ async def _build_and_render(job_id, client, month, year, mapping):
             continue
         from build_audit import _read_file, _derive_subsheets, _filter_by_domain, _dedup_by_key
         elem = derive_type.replace("__derive_", "")
-        domain = _guess_domain(data_dir, client)
         rows = _read_file(fpath)
         if rows:
             rows = _dedup_by_key(rows, "Dirección")
             derived = _derive_subsheets(rows, elem)
             for sheet_name, (headers, rows_out) in derived.items():
-                # Write derived rows to temporary NDJSON
-                tmp_f = job_dir / f"__derived__{sheet_name}.ndjson"
+                # Write derived rows to data_dir (where build_audit looks)
+                tmp_f = data_dir / f"__derived__{sheet_name}.ndjson"
                 with open(tmp_f, "w", encoding="utf-8") as tf:
                     for row in rows_out:
                         d = {h: row[i] if i < len(row) else "" for i, h in enumerate(headers)}
                         json.dump(d, tf, ensure_ascii=False)
                         tf.write("\n")
-                # Point mapping to temp file
                 mapping[tmp_f.name] = sheet_name
+            # Move original to processed/ so it doesn't show as unmatched
+            processed_dir = data_dir / "processed"
+            processed_dir.mkdir(exist_ok=True)
+            fpath.rename(processed_dir / fname)
         # Remove the __derive_ placeholder
         del mapping[fname]
     
@@ -276,10 +278,13 @@ async def _build_and_render(job_id, client, month, year, mapping):
 
     unmatched_html = ""
     if unmatched:
-        unmatched_html = "<div style='margin-top:16px;background:#1e293b;border-radius:8px;padding:12px'><strong style='color:#f59e0b'>Archivos no reconocidos:</strong><ul style='color:#94a3b8;font-size:12px'>"
-        for u in unmatched:
-            unmatched_html += f"<li>{u['file']} — columnas: {', '.join(u['columns'][:5])}</li>"
-        unmatched_html += "</ul><p style='color:#94a3b8;font-size:11px'>Volve a subir con un mapping.json</p></div>"
+        # Filter out internal derived temp files
+        real_unmatched = [u for u in unmatched if not u['file'].startswith('__derived__')]
+        if real_unmatched:
+            unmatched_html = "<div style='margin-top:16px;background:#1e293b;border-radius:8px;padding:12px'><strong style='color:#f59e0b'>Archivos no reconocidos:</strong><ul style='color:#94a3b8;font-size:12px'>"
+            for u in real_unmatched:
+                unmatched_html += f"<li>{u['file']} — columnas: {', '.join(u['columns'][:5])}</li>"
+            unmatched_html += "</ul><p style='color:#94a3b8;font-size:11px'>Volve a subir con un mapping.json</p></div>"
 
     result_html = (BASE_DIR / "templates" / "result.html").read_text(encoding="utf-8")
     result_html = result_html.replace("{{CLIENT}}", client)
