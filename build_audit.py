@@ -152,13 +152,13 @@ COLUMN_ALIASES = {
     "código de respuesta": "Código de estado",
     "codigo de respuesta": "Código de estado",
     "tamaño": "Tamaño (bytes)",
-    "transferido": "Transferido (bytes)",
+    "transferido": "Código de estado",
     "rastreabilidad de enlaces": "Rastreabilidad",
     "tipo de ruta": "Tipo de ruta",
     "ruta del enlace": "Ruta del enlace",
     "origen del enlace": "Origen del enlace",
     "posición del enlace": "Posición del enlace",
-    "texto ancla": "Ancla",
+    # NOT aliased: Texto ancla (different from Ancla in SF exports)
     "texto alt": "Texto ALT",
     "seguir": "Seguir",
     "destino": "Destino",
@@ -704,10 +704,10 @@ _register(["Fuente", "Destino", "Ancla"],
           None, None, None)  # ambiguous
     
 # Detalle Errores 404 from SF desktop bulk export (Desde/Hasta → Fuente/Destino)
-_register(["Fuente", "Destino", "Ancla", "Código de estado"],
+_register(["Fuente", "Destino", "Texto ancla", "Código de estado"],
           "Detalle Errores 404",
           ["URL 404", "URL Origen", "Texto ancla"],
-          ["Destino", "Fuente", "Ancla"])
+          ["Destino", "Fuente", "Texto ancla"])
 
 # --- Signatures from PageSpeed SEO element exports (Dirección-based, aggregate) ---
 _register(["Dirección", "Ahorro al minimizar JavaScript (ms)", "Ahorro al minimizar JavaScript (Bytes)"],
