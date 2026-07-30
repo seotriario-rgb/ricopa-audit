@@ -1041,7 +1041,6 @@ def build_audit(data_dir: str, xlsx_path: str, pptx_path: str = None,
         "H1 — Múltiple", "Metatítulo — Múltiple", "Canónica — Errores",
         "Metadescripción — Duplicada",
     })
-
     # 2. Populate sheets from detected assignments
     for sheet_name, (headers, col_map, file_path) in assignments.items():
         rows_raw = _read_file(Path(file_path))
@@ -1052,10 +1051,8 @@ def build_audit(data_dir: str, xlsx_path: str, pptx_path: str = None,
 
         # Filter by domain (except for certain sheets)
         if sheet_name not in ("URLs HTTP (no HTTPS)",):
-            # Detect URL key: use "Dirección" by default, but some sheets use other keys
             url_key = "Dirección"
             if col_map and col_map[0] and col_map[0] != "Dirección":
-                # col_map maps source columns, first entry is the URL column
                 url_key = col_map[0]
             rows_raw = _filter_by_domain(rows_raw, domain, key=url_key)
 

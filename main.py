@@ -22,6 +22,37 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 
 ALL_SHEETS = [s for s in SHEET_ORDER if s not in ("Matriz de entendimiento", "Resumen")]
 
+# Categorize sheets by RICOPA for grouped dropdown
+SHEET_CATEGORIES = {
+    "Rastreo": ["Errores 404", "Detalle Errores 404", "Redirecciones 3xx", "Bucles y cadenas redirección",
+                 "URLs HTTP (no HTTPS)", "URLs no ASCII", "PS Minificar CSS", "PS Minificar JS"],
+    "Indexación": ["Canónica — Falta", "Canónica — Múltiple", "Canónica — Errores",
+                    "Directivas — Noindex", "Directivas — Nofollow",
+                    "PS Visualización fuentes", "PS Solicitudes LCP", "PageSpeed — CLS"],
+    "On Page": ["Metatítulo — Falta", "Metatítulo — Duplicado", "Metatítulo — Múltiple",
+                 "Metatítulo — Largo", "Metatítulo — Corto", "Metatítulo = H1",
+                 "Metadescripción — Falta", "Metadescripción — Duplicada",
+                 "Metadescripción — Larga", "Metadescripción — Corta", "Metadescripción — Múltiple",
+                 "Metadatos propuestos"],
+    "Contenido": ["H1 — Falta", "H1 — Múltiple", "H1 — Duplicado", "H1 — Largo (+70)",
+                   "Poco contenido", "Imágenes +100kb", "Detalle Imágenes +100kb",
+                   "Imágenes sin ALT text", "Detalle Imágenes sin ALT",
+                   "Imágenes sin atributo tamaño", "Detalle Imágenes sin size attr",
+                   "Imágenes dim incorrectas", "Detalle Img dim incorrectas"],
+    "PS (resto)": ["PS Mejorar entrega imágenes"],
+}
+# Flatten: all categorized sheets
+_categorized = set()
+for sheets in SHEET_CATEGORIES.values():
+    _categorized.update(sheets)
+# Add any remaining from ALL_SHEETS not categorized
+for s in ALL_SHEETS:
+    if s not in _categorized:
+        if "PS" in s or "Pagespeed" in s or "PageSpeed" in s:
+            SHEET_CATEGORIES.setdefault("Indexación", []).append(s)
+        else:
+            SHEET_CATEGORIES.setdefault("Contenido", []).append(s)
+
 # Grouped options for the dropdown: special "Todo" derivations + individual sheets
 DROPDOWN_OPTIONS = [
     ("", "-- Seleccionar hoja --", ""),
@@ -268,37 +299,32 @@ async def _build_and_render(job_id, client, month, year, mapping):
 
 def _render_help_screen(job_id, client, month, year, unmatched):
     """Show unmatched files with dropdowns for manual sheet assignment."""
+    # Build grouped dropdown options
+    options_html = '<option value="">-- Seleccionar hoja --</option>'
+    options_html += '<optgroup label="📋 Archivos Todo (derivan varias hojas)">'
+    for value, label in [("__derive_title", "Títulos → Falta, Largo, Corto, Duplicado"),
+                          ("__derive_meta", "Meta descripción → Falta, Larga, Corta, Duplicada"),
+                          ("__derive_h1", "H1 → Falta, Largo, Duplicado"),
+                          ("__derive_images", "Imágenes → +100kb, sin ALT, sin size")]:
+        options_html += f'<option value="{value}">{label}</option>'
+    options_html += '</optgroup>'
+    
+    for cat, sheets in SHEET_CATEGORIES.items():
+        options_html += f'<optgroup label="── {cat} ──">'
+        for sheet in sheets:
+            options_html += f'<option value="{sheet}">{sheet}</option>'
+        options_html += '</optgroup>'
+    
     rows = ""
-    # Build options HTML with optgroup for Todo derivations vs individual sheets
-    todo_opts = []
-    sheet_opts = []
-    for value, label, _ in DROPDOWN_OPTIONS:
-        if value == "" and label == "":
-            continue
-        if value == "" or value == "─── Hojas individuales ───":
-            continue
-        if value.startswith("__derive_"):
-            todo_opts.append(f'<option value="{value}">{label}</option>')
-        else:
-            sheet_opts.append(f'<option value="{value}">{label}</option>')
-    
-    options_html = (
-        '<option value="">-- Seleccionar hoja --</option>'
-        + '<optgroup label="Archivos Todo (derivan varias hojas)">' + "".join(todo_opts) + '</optgroup>'
-        + '<optgroup label="Hojas individuales">' + "".join(sheet_opts) + '</optgroup>'
-    )
-    
     for i, u in enumerate(unmatched):
         hint = u.get("hint") or ""
-        columns_str = ", ".join(u["columns"][:5])
-        # Pre-select hint if available
-        hint_selected = f"<option value=\"{hint}\" selected>{hint} (sugerido)</option>" if hint else ""
+        hint_selected = f'<option value="{hint}" selected style="display:none">{hint} (sugerido)</option>' if hint else ""
+        pre_options = f'<option value="">-- Seleccionar hoja --</option>{hint_selected}' if hint else ''
         rows += f"""
         <tr>
-            <td style='font-size:12px;word-break:break-all;max-width:280px'>{u['file']}</td>
-            <td style='font-size:11px;color:#94a3b8'>{columns_str}{'...' if len(u['columns']) > 5 else ''}</td>
+            <td style='font-size:12px;word-break:break-all;max-width:400px'>📄 {u['file']}</td>
             <td>
-                <select name="assign__{u['file']}" style='padding:6px 10px;border-radius:6px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;width:100%;min-width:220px'>
+                <select name="assign__{u['file']}" style='padding:6px 10px;border-radius:6px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;width:100%;min-width:260px'>
                     {options_html}
                 </select>
             </td>
@@ -312,7 +338,7 @@ def _render_help_screen(job_id, client, month, year, unmatched):
     :root {{ --bg: #0f172a; --card: #1e293b; --border: #334155; --text: #e2e8f0; --muted: #94a3b8; --accent: #3b82f6; }}
     * {{ margin:0; padding:0; box-sizing:border-box; }}
     body {{ font-family: -apple-system, sans-serif; background: var(--bg); color: var(--text); padding: 20px; }}
-    .card {{ background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 28px; max-width: 900px; margin: 0 auto; }}
+    .card {{ background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 28px; max-width: 850px; margin: 0 auto; }}
     h2 {{ font-size: 20px; margin-bottom: 6px; }} h2 span {{ color: #f59e0b; }}
     .muted {{ color: var(--muted); font-size: 13px; margin-bottom: 20px; }}
     table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; }}
@@ -321,19 +347,18 @@ def _render_help_screen(job_id, client, month, year, unmatched):
     button {{ padding: 12px 28px; background: var(--accent); color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 14px; }}
     button:hover {{ opacity: 0.9; }}
     .info {{ background: #1e3a5f; border-radius: 8px; padding: 12px; margin-bottom: 20px; font-size: 12px; color: #60a5fa; }}
-    select option:checked {{ background: var(--accent); }}
 </style></head>
 <body>
 <div class="card">
     <h2><span>{len(unmatched)} archivos</span> necesitan ayuda</h2>
     <p class="muted">{client} — {month} {year} • Selecciona a que hoja pertenece cada archivo</p>
-    <div class="info">Los archivos que ya se detectaron automaticamente se procesaran normalmente. Los que no se identifican tienen un desplegable con todas las hojas disponibles. Si no estas seguro, dejalo en blanco y se omitira. El mapping.json se genera automaticamente al finalizar.</div>
+    <div class="info">Las hojas estan agrupadas por RICOPA. Usa "Archivos Todo" para CSVs que contienen todos los datos de un elemento y necesitan derivarse en varias hojas.</div>
     <form action="/audit/assign/{job_id}" method="POST">
         <input type="hidden" name="client" value="{client}">
         <input type="hidden" name="month" value="{month}">
         <input type="hidden" name="year" value="{year}">
         <table>
-            <tr><th>Archivo</th><th>Columnas detectadas</th><th>Asignar a hoja</th></tr>
+            <tr><th>Archivo</th><th>Asignar a hoja</th></tr>
             {rows}
         </table>
         <button type="submit">Confirmar y generar auditoria</button>
