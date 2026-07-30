@@ -396,7 +396,8 @@ ELEMENT_FINGERPRINTS = {
     "title": frozenset(["Dirección", "Título 1", "Longitud del título 1", "Ancho de píxeles del título 1"]),
     "meta": frozenset(["Dirección", "Meta description 1", "Longitud de la meta description 1", "Ancho de píxeles de la meta description 1"]),
     "h1": frozenset(["Dirección", "H1-1", "Longitud de H1-1"]),
-    "images": frozenset(["Dirección", "Dimensiones", "Tipo de contenido", "Enlaces de entrada de imágenes"]),
+    # "images" fingerprint NOT auto-detected — too ambiguous with filtered exports
+    # Images Todo derivation only runs via explicit __derive_images dropdown
 }
 
 def _detect_element_type(columns: frozenset) -> str | None:
@@ -506,7 +507,8 @@ def _derive_subsheets(rows: list[dict], element_type: str) -> dict:
     
     elif element_type == "images":
         # Imágenes — +100kb (skip if Tamaño column not present)
-        if "Tamaño (Bytes)" in set(r.keys() for r in rows[:1]):
+        col_set = set(rows[0].keys()) if rows else set()
+        if "Tamaño (Bytes)" in col_set:
             over100 = [r for r in rows if int(r.get("Tamaño (Bytes)", 0) or 0) > 100000]
             if over100:
                 results["Imágenes +100kb"] = (
