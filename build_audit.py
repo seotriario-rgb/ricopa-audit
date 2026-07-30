@@ -709,6 +709,12 @@ _register(["Fuente", "Destino", "Texto ancla", "Código de estado"],
           ["URL 404", "URL Origen", "Texto ancla"],
           ["Destino", "Fuente", "Texto ancla"])
 
+# Detalle 301 redirects from SF desktop bulk export
+_register(["Fuente", "Destino", "Follow", "Código de estado", "Origen del enlace"],
+          "Redirecciones 3xx",
+          ["URL", "Código", "URL destino"],
+          ["Fuente", "Código de estado", "Destino"])
+
 # --- Signatures from PageSpeed SEO element exports (Dirección-based, aggregate) ---
 _register(["Dirección", "Ahorro al minimizar JavaScript (ms)", "Ahorro al minimizar JavaScript (Bytes)"],
           "PS Minificar JS",
