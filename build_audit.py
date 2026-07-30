@@ -227,7 +227,7 @@ def _filter_by_domain(rows: list[dict], domain: str, key: str = "Dirección") ->
     result = []
     for r in rows:
         url = r.get(key, "")
-        if not url:
+        if not url or not isinstance(url, str):
             continue
         host = urlparse(url).hostname or ""
         if host.endswith(domain) or host == domain:
@@ -245,6 +245,125 @@ def _dedup_by_key(rows: list[dict], key: str = "Dirección") -> list[dict]:
         seen.add(val)
         result.append(r)
     return result
+
+
+# ======================================================================
+# Sub-sheet derivation from "Todo" exports
+# ======================================================================
+
+# Element type detection by column fingerprint
+ELEMENT_FINGERPRINTS = {
+    "title": frozenset(["Dirección", "Título 1", "Longitud del título 1", "Ancho de píxeles del título 1"]),
+    "meta": frozenset(["Dirección", "Meta description 1", "Longitud de la meta description 1", "Ancho de píxeles de la meta description 1"]),
+    "h1": frozenset(["Dirección", "H1-1", "Longitud de H1-1"]),
+}
+
+def _detect_element_type(columns: frozenset) -> str | None:
+    """Detect if columns belong to a known 'Todo' export element type."""
+    for elem_type, fingerprint in ELEMENT_FINGERPRINTS.items():
+        if fingerprint.issubset(columns):
+            return elem_type
+    return None
+
+def _derive_subsheets(rows: list[dict], element_type: str) -> dict:
+    """
+    From a 'Todo' export of an element, derive all sub-sheets.
+    Returns {sheet_name: (headers, rows)}.
+    """
+    results = {}
+    
+    if element_type == "title":
+        # Metatítulo — Falta
+        falta = [r for r in rows if not (r.get("Título 1") or "").strip()]
+        if falta:
+            results["Metatítulo — Falta"] = (
+                ["URL", "Indexabilidad"],
+                [[r.get("Dirección",""), r.get("Indexabilidad","")] for r in falta]
+            )
+        # Metatítulo — Duplicado
+        dup = [r for r in rows if int(r.get("Repeticiones", 0) or 0) > 1]
+        if dup:
+            results["Metatítulo — Duplicado"] = (
+                ["URL", "Título", "Repeticiones"],
+                [[r.get("Dirección",""), r.get("Título 1",""), r.get("Repeticiones","")] for r in dup]
+            )
+        # Metatítulo — Largo (>60 chars or >561 px)
+        largo = [r for r in rows if (int(r.get("Longitud del título 1", 0) or 0) > 60 or 
+                                      int(r.get("Ancho de píxeles del título 1", 0) or 0) > 561)]
+        if largo:
+            results["Metatítulo — Largo"] = (
+                ["URL", "Título", "Caracteres", "Píxeles"],
+                [[r.get("Dirección",""), r.get("Título 1",""), 
+                  r.get("Longitud del título 1",""), r.get("Ancho de píxeles del título 1","")] for r in largo]
+            )
+        # Metatítulo — Corto (<30 chars or <200 px)
+        corto = [r for r in rows if (int(r.get("Longitud del título 1", 999) or 999) < 30 or 
+                                      int(r.get("Ancho de píxeles del título 1", 999) or 999) < 200)]
+        if corto:
+            results["Metatítulo — Corto"] = (
+                ["URL", "Título", "Caracteres", "Píxeles"],
+                [[r.get("Dirección",""), r.get("Título 1",""),
+                  r.get("Longitud del título 1",""), r.get("Ancho de píxeles del título 1","")] for r in corto]
+            )
+    
+    elif element_type == "meta":
+        # Metadescripción — Falta
+        falta = [r for r in rows if not (r.get("Meta description 1") or "").strip()]
+        if falta:
+            results["Metadescripción — Falta"] = (
+                ["URL", "Indexabilidad"],
+                [[r.get("Dirección",""), r.get("Indexabilidad","")] for r in falta]
+            )
+        # Metadescripción — Duplicada
+        dup = [r for r in rows if int(r.get("Repeticiones", 0) or 0) > 1]
+        if dup:
+            results["Metadescripción — Duplicada"] = (
+                ["URL", "Metadescripción", "Repeticiones"],
+                [[r.get("Dirección",""), r.get("Meta description 1",""), r.get("Repeticiones","")] for r in dup]
+            )
+        # Metadescripción — Larga (>155 chars or >985 px)
+        largo = [r for r in rows if (int(r.get("Longitud de la meta description 1", 0) or 0) > 155 or
+                                      int(r.get("Ancho de píxeles de la meta description 1", 0) or 0) > 985)]
+        if largo:
+            results["Metadescripción — Larga"] = (
+                ["URL", "Metadescripción", "Caracteres", "Píxeles"],
+                [[r.get("Dirección",""), r.get("Meta description 1",""),
+                  r.get("Longitud de la meta description 1",""), r.get("Ancho de píxeles de la meta description 1","")] for r in largo]
+            )
+        # Metadescripción — Corta (<70 chars or <400 px)
+        corto = [r for r in rows if (int(r.get("Longitud de la meta description 1", 999) or 999) < 70 or
+                                      int(r.get("Ancho de píxeles de la meta description 1", 999) or 999) < 400)]
+        if corto:
+            results["Metadescripción — Corta"] = (
+                ["URL", "Metadescripción", "Caracteres", "Píxeles"],
+                [[r.get("Dirección",""), r.get("Meta description 1",""),
+                  r.get("Longitud de la meta description 1",""), r.get("Ancho de píxeles de la meta description 1","")] for r in corto]
+            )
+    
+    elif element_type == "h1":
+        # H1 — Falta
+        falta = [r for r in rows if not (r.get("H1-1") or "").strip()]
+        if falta:
+            results["H1 — Falta"] = (
+                ["URL", "Indexabilidad"],
+                [[r.get("Dirección",""), r.get("Indexabilidad","")] for r in falta]
+            )
+        # H1 — Duplicado
+        dup = [r for r in rows if int(r.get("Repeticiones", 0) or 0) > 1]
+        if dup:
+            results["H1 — Duplicado"] = (
+                ["URL", "H1", "Repeticiones"],
+                [[r.get("Dirección",""), r.get("H1-1",""), r.get("Repeticiones","")] for r in dup]
+            )
+        # H1 — Largo (>70 chars)
+        largo = [r for r in rows if int(r.get("Longitud de H1-1", 0) or 0) > 70]
+        if largo:
+            results["H1 — Largo (+70)"] = (
+                ["URL", "H1", "Caracteres"],
+                [[r.get("Dirección",""), r.get("H1-1",""), r.get("Longitud de H1-1","")] for r in largo]
+            )
+    
+    return results
 
 
 # ======================================================================
@@ -386,7 +505,23 @@ _register(["Fuente", "Destino", "Texto ALT", "Longitud", "Tipo de ruta", "Posici
 _register(["Fuente", "Destino", "Ancla"],
           None, None, None)  # ambiguous
 
-# --- Signatures from PageSpeed reports ---
+# --- Signatures from PageSpeed SEO element exports (Dirección-based, aggregate) ---
+_register(["Dirección", "Ahorro al minimizar JavaScript (ms)", "Ahorro al minimizar JavaScript (Bytes)"],
+          "PS Minificar JS",
+          ["URL", "Ahorro (ms)", "Ahorro estimado"],
+          ["Dirección", "Ahorro al minimizar JavaScript (ms)", "Ahorro al minimizar JavaScript (Bytes)"])
+
+_register(["Dirección", "Ahorro al minimizar CSS (ms)"],
+          "PS Minificar CSS",
+          ["URL", "Ahorro (ms)"],
+          ["Dirección", "Ahorro al minimizar CSS (ms)"])
+
+_register(["Dirección", "Ahorro en la visualización de fuentes (ms)"],
+          "PS Visualización fuentes",
+          ["URL", "Ahorro (ms)"],
+          ["Dirección", "Ahorro en la visualización de fuentes (ms)"])
+
+# --- Signatures from PageSpeed reports (file-level detail) ---
 _register(["Página fuente", "URL", "Tamaño (bytes)", "Posible ahorro (bytes)"],
           "PS Minificar JS",
           ["URL Página", "Archivo JS a minificar", "Tamaño (bytes)", "Ahorro estimado (bytes)"],
@@ -704,6 +839,52 @@ def build_audit(data_dir: str, xlsx_path: str, pptx_path: str = None,
     # 1. Detect assignments
     assignments, unmatched = _detect_assignments(str(data_dir), mapping)
     
+    # 1.5 Derive sub-sheets from "Todo" element exports
+    # Scan for master files (Títulos Todo, Meta Todo, H1 Todo)
+    processed_elem_types = set()
+    for fpath in sorted(data_dir.glob("*")):
+        if fpath.suffix.lower() not in (".csv", ".ndjson", ".json"):
+            continue
+        if fpath.name.startswith("."):
+            continue
+        cols = _get_columns(fpath)
+        elem_type = _detect_element_type(cols)
+        if not elem_type or elem_type in processed_elem_types:
+            continue
+        processed_elem_types.add(elem_type)
+        
+        # Read ALL rows from this master file + any sibling files with same columns
+        all_rows = []
+        # Find all files with same element fingerprint
+        fingerprint = ELEMENT_FINGERPRINTS[elem_type]
+        for f2 in sorted(data_dir.glob("*")):
+            if f2.suffix.lower() not in (".csv", ".ndjson", ".json"):
+                continue
+            f2_cols = _get_columns(f2)
+            if fingerprint.issubset(f2_cols):
+                rows = _read_file(f2)
+                if rows:
+                    all_rows.extend(rows)
+        
+        if not all_rows:
+            continue
+        
+        # Filter by domain and dedup
+        all_rows = _filter_by_domain(all_rows, domain)
+        all_rows = _dedup_by_key(all_rows, "Dirección")
+        
+        # Derive sub-sheets
+        derived = _derive_subsheets(all_rows, elem_type)
+        
+        for sheet_name, (headers, rows) in derived.items():
+            _fill_sheet(wb, sheet_name, headers, rows)
+            counts[sheet_name] = len(rows)
+            # Remove from individual assignments if present (Todo overrides individual)
+            assignments.pop(sheet_name, None)
+        
+        # Continue processing next element type (don't break)
+        continue
+    
     # Ensure all known sheets have a placeholder
     all_known_sheets = set()
     for sig, entries in SIGNATURES.items():
@@ -729,7 +910,12 @@ def build_audit(data_dir: str, xlsx_path: str, pptx_path: str = None,
 
         # Filter by domain (except for certain sheets)
         if sheet_name not in ("URLs HTTP (no HTTPS)",):
-            rows_raw = _filter_by_domain(rows_raw, domain)
+            # Detect URL key: use "Dirección" by default, but some sheets use other keys
+            url_key = "Dirección"
+            if col_map and col_map[0] and col_map[0] != "Dirección":
+                # col_map maps source columns, first entry is the URL column
+                url_key = col_map[0]
+            rows_raw = _filter_by_domain(rows_raw, domain, key=url_key)
 
         # Map columns
         rows_out = []
