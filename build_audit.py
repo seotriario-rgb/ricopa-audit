@@ -248,6 +248,142 @@ def _dedup_by_key(rows: list[dict], key: str = "Dirección") -> list[dict]:
 
 
 # ======================================================================
+# Data sampling: detect sheet by reading first rows' values
+# ======================================================================
+
+def _sample_detect(fpath: Path) -> str | None:
+    """
+    Read the first 10 rows and, based on the actual data values,
+    determine which sheet this file belongs to.
+    Only called when column signature is ambiguous or unknown.
+    Returns sheet name or None.
+    """
+    rows = _read_file(fpath)
+    if not rows:
+        return None
+    cols = _get_columns(fpath)
+    sample = rows[:10]
+    
+    def _int_val(r, field):
+        try:
+            return int(float(r.get(field, 0) or 0))
+        except (ValueError, TypeError):
+            return 0
+    
+    # --- Title files (Dirección, Título 1, Longitud, Ancho) ---
+    if frozenset(["Dirección", "Título 1"]) <= cols:
+        longs = [_int_val(r, "Longitud del título 1") for r in sample if _int_val(r, "Longitud del título 1") > 0]
+        reps = [_int_val(r, "Repeticiones") for r in sample]
+        titulos = [r.get("Título 1","") for r in sample if r.get("Título 1","").strip()]
+        
+        if not titulos and all(v == 0 for v in longs):
+            return "Metatítulo — Falta"
+        if longs and all(v > 60 for v in longs):
+            return "Metatítulo — Largo"
+        if longs and all(v < 30 for v in longs):
+            return "Metatítulo — Corto"
+        if any(v > 0 for v in reps) and all(v > 1 for v in reps if v > 0):
+            return "Metatítulo — Duplicado"
+        # Mixed lengths → likely Todo export, handled by derivation
+        if longs and any(v > 60 for v in longs) and any(v < 30 for v in longs):
+            return None  # Let derivation handle it
+        if longs:
+            return "Metatítulo — Largo"  # Default: most common
+    
+    # --- Meta files (Dirección, Meta description 1, Longitud, Ancho) ---
+    if frozenset(["Dirección", "Meta description 1"]) <= cols:
+        longs = [_int_val(r, "Longitud de la meta description 1") for r in sample if _int_val(r, "Longitud de la meta description 1") > 0]
+        reps = [_int_val(r, "Repeticiones") for r in sample]
+        metas = [r.get("Meta description 1","") for r in sample if r.get("Meta description 1","").strip()]
+        
+        if not metas and all(v == 0 for v in longs):
+            return "Metadescripción — Falta"
+        if longs and all(v > 155 for v in longs):
+            return "Metadescripción — Larga"
+        if longs and all(v < 70 for v in longs):
+            return "Metadescripción — Corta"
+        if any(v > 0 for v in reps) and all(v > 1 for v in reps if v > 0):
+            return "Metadescripción — Duplicada"
+        return None  # Todo export
+    
+    # --- H1 files (Dirección, H1-1, Longitud) ---
+    if frozenset(["Dirección", "H1-1"]) <= cols:
+        longs = [_int_val(r, "Longitud de H1-1") for r in sample if _int_val(r, "Longitud de H1-1") > 0]
+        reps = [_int_val(r, "Repeticiones") for r in sample]
+        h1s = [r.get("H1-1","") for r in sample if r.get("H1-1","").strip()]
+        
+        if not h1s and all(v == 0 for v in longs):
+            return "H1 — Falta"
+        if longs and all(v > 70 for v in longs):
+            return "H1 — Largo (+70)"
+        if any(v > 0 for v in reps) and all(v > 1 for v in reps if v > 0):
+            return "H1 — Duplicado"
+        return None  # Todo export
+    
+    # --- Images: +100kB ---
+    if frozenset(["Dirección", "Tamaño (Bytes)"]) <= cols:
+        sizes = [_int_val(r, "Tamaño (Bytes)") for r in sample if _int_val(r, "Tamaño (Bytes)") > 0]
+        if sizes and all(s > 100000 for s in sizes):
+            return "Imágenes +100kb"
+        return None
+    
+    # --- Images: size attr missing ---
+    if frozenset(["Dirección", "Dimensiones"]) <= cols:
+        dims = [r.get("Dimensiones") for r in sample if r.get("Dimensiones")]
+        if not dims:
+            return "Imágenes sin atributo tamaño"
+        return None
+    
+    # --- Images: ALT missing ---
+    if frozenset(["Dirección", "Texto ALT"]) <= cols:
+        alts = [r.get("Texto ALT", "") for r in sample if r.get("Texto ALT", "").strip()]
+        if not alts:
+            return "Imágenes sin ALT text"
+        return None
+    
+    # --- Canonicals ---
+    if frozenset(["Dirección", "Elemento de enlace canónico 1"]) <= cols:
+        can = [r.get("Elemento de enlace canónico 1") for r in sample if r.get("Elemento de enlace canónico 1", "").strip()]
+        if not can:
+            return "Canónica — Falta"
+        return "Canónica — Múltiple"
+    
+    # --- Bulk exports: Fuente-based files ---
+    if frozenset(["Fuente", "Destino"]) <= cols:
+        # Check if the data suggests images (image URLs in Destino)
+        destinos = [r.get("Destino", "") for r in sample if r.get("Destino")]
+        if destinos:
+            first = destinos[0].lower()
+            if any(ext in first for ext in [".jpg", ".png", ".webp", ".gif", ".svg"]):
+                # Image-related bulk export
+                tipo = [r.get("Tipo", "") for r in sample]
+                if tipo and "Imagen" in str(tipo):
+                    if "Tamaño (bytes)" in cols:
+                        return "Detalle Imágenes +100kb"
+                    return "Detalle Imágenes sin ALT"
+            return None  # Could be canonical, noindex, etc.
+    
+    # --- PS reports ---
+    if frozenset(["Página fuente"]) <= cols:
+        # Report files — check URL patterns and metrics
+        urls = [r.get("URL", "") for r in sample if r.get("URL")]
+        if urls:
+            first = urls[0].lower()
+            if any(ext in first for ext in [".js", ".css"]):
+                if "Posible ahorro (bytes)" in cols:
+                    return "PS Minificar JS"
+                return "PS Minificar CSS"
+            if any(ext in first for ext in [".woff", ".woff2", ".ttf", ".otf"]):
+                return "PS Visualización fuentes"
+            if any(ext in first for ext in [".jpg", ".png", ".webp", ".gif", ".svg"]):
+                if "Motivo" in cols:
+                    return "PS Mejorar entrega imágenes"
+            return None
+    
+    return None
+
+
+# ======================================================================
 # Sub-sheet derivation from "Todo" exports
 # ======================================================================
 
@@ -673,10 +809,12 @@ def _detect_assignments(data_dir: str, mapping: dict = None) -> tuple[dict[str, 
                         if e["sheet"] == sheet:
                             assignment = (sheet, e["headers"], e["col_map"], str(fpath))
                             break
-                    if assignment:
-                        break
-                if assignment:
-                    break
+        # 3.5 Data sampling: read actual values to determine sheet
+        if not assignment:
+            detected = _sample_detect(fpath)
+            if detected:
+                first_col = sorted(cols)[0] if cols else "Dirección"
+                assignment = (detected, ["URL"], [first_col], str(fpath))
         
         # 2. Check column signatures
         if not assignment:
