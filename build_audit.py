@@ -417,14 +417,14 @@ def _derive_subsheets(rows: list[dict], element_type: str) -> dict:
         falta = [r for r in rows if not (r.get("Título 1") or "").strip()]
         if falta:
             results["Metatítulo — Falta"] = (
-                ["URL", "Indexabilidad"],
+                ["Dirección", "Indexabilidad"],
                 [[r.get("Dirección",""), r.get("Indexabilidad","")] for r in falta]
             )
         # Metatítulo — Duplicado
         dup = [r for r in rows if int(r.get("Repeticiones", 0) or 0) > 1]
         if dup:
             results["Metatítulo — Duplicado"] = (
-                ["URL", "Título", "Repeticiones"],
+                ["Dirección", "Título", "Repeticiones"],
                 [[r.get("Dirección",""), r.get("Título 1",""), r.get("Repeticiones","")] for r in dup]
             )
         # Metatítulo — Largo (>60 chars or >561 px)
@@ -432,7 +432,7 @@ def _derive_subsheets(rows: list[dict], element_type: str) -> dict:
                                       int(r.get("Ancho de píxeles del título 1", 0) or 0) > 561)]
         if largo:
             results["Metatítulo — Largo"] = (
-                ["URL", "Título", "Caracteres", "Píxeles"],
+                ["Dirección", "Título", "Caracteres", "Píxeles"],
                 [[r.get("Dirección",""), r.get("Título 1",""), 
                   r.get("Longitud del título 1",""), r.get("Ancho de píxeles del título 1","")] for r in largo]
             )
@@ -441,7 +441,7 @@ def _derive_subsheets(rows: list[dict], element_type: str) -> dict:
                                       int(r.get("Ancho de píxeles del título 1", 999) or 999) < 200)]
         if corto:
             results["Metatítulo — Corto"] = (
-                ["URL", "Título", "Caracteres", "Píxeles"],
+                ["Dirección", "Título", "Caracteres", "Píxeles"],
                 [[r.get("Dirección",""), r.get("Título 1",""),
                   r.get("Longitud del título 1",""), r.get("Ancho de píxeles del título 1","")] for r in corto]
             )
@@ -451,14 +451,14 @@ def _derive_subsheets(rows: list[dict], element_type: str) -> dict:
         falta = [r for r in rows if not (r.get("Meta description 1") or "").strip()]
         if falta:
             results["Metadescripción — Falta"] = (
-                ["URL", "Indexabilidad"],
+                ["Dirección", "Indexabilidad"],
                 [[r.get("Dirección",""), r.get("Indexabilidad","")] for r in falta]
             )
         # Metadescripción — Duplicada
         dup = [r for r in rows if int(r.get("Repeticiones", 0) or 0) > 1]
         if dup:
             results["Metadescripción — Duplicada"] = (
-                ["URL", "Metadescripción", "Repeticiones"],
+                ["Dirección", "Metadescripción", "Repeticiones"],
                 [[r.get("Dirección",""), r.get("Meta description 1",""), r.get("Repeticiones","")] for r in dup]
             )
         # Metadescripción — Larga (>155 chars or >985 px)
@@ -466,7 +466,7 @@ def _derive_subsheets(rows: list[dict], element_type: str) -> dict:
                                       int(r.get("Ancho de píxeles de la meta description 1", 0) or 0) > 985)]
         if largo:
             results["Metadescripción — Larga"] = (
-                ["URL", "Metadescripción", "Caracteres", "Píxeles"],
+                ["Dirección", "Metadescripción", "Caracteres", "Píxeles"],
                 [[r.get("Dirección",""), r.get("Meta description 1",""),
                   r.get("Longitud de la meta description 1",""), r.get("Ancho de píxeles de la meta description 1","")] for r in largo]
             )
@@ -475,7 +475,7 @@ def _derive_subsheets(rows: list[dict], element_type: str) -> dict:
                                       int(r.get("Ancho de píxeles de la meta description 1", 999) or 999) < 400)]
         if corto:
             results["Metadescripción — Corta"] = (
-                ["URL", "Metadescripción", "Caracteres", "Píxeles"],
+                ["Dirección", "Metadescripción", "Caracteres", "Píxeles"],
                 [[r.get("Dirección",""), r.get("Meta description 1",""),
                   r.get("Longitud de la meta description 1",""), r.get("Ancho de píxeles de la meta description 1","")] for r in corto]
             )
@@ -485,22 +485,49 @@ def _derive_subsheets(rows: list[dict], element_type: str) -> dict:
         falta = [r for r in rows if not (r.get("H1-1") or "").strip()]
         if falta:
             results["H1 — Falta"] = (
-                ["URL", "Indexabilidad"],
+                ["Dirección", "Indexabilidad"],
                 [[r.get("Dirección",""), r.get("Indexabilidad","")] for r in falta]
             )
         # H1 — Duplicado
         dup = [r for r in rows if int(r.get("Repeticiones", 0) or 0) > 1]
         if dup:
             results["H1 — Duplicado"] = (
-                ["URL", "H1", "Repeticiones"],
+                ["Dirección", "H1", "Repeticiones"],
                 [[r.get("Dirección",""), r.get("H1-1",""), r.get("Repeticiones","")] for r in dup]
             )
         # H1 — Largo (>70 chars)
         largo = [r for r in rows if int(r.get("Longitud de H1-1", 0) or 0) > 70]
         if largo:
             results["H1 — Largo (+70)"] = (
-                ["URL", "H1", "Caracteres"],
+                ["Dirección", "H1", "Caracteres"],
                 [[r.get("Dirección",""), r.get("H1-1",""), r.get("Longitud de H1-1","")] for r in largo]
+            )
+    
+    elif element_type == "images":
+        # Imágenes — +100kb
+        over100 = [r for r in rows if int(r.get("Tamaño (Bytes)", 0) or 0) > 100000]
+        if over100:
+            results["Imágenes +100kb"] = (
+                ["Dirección", "Tipo", "Tamaño (kB)", "Dimensiones", "# enlaces entrada"],
+                [[r.get("Dirección",""), r.get("Tipo de contenido",""), r.get("Tamaño (Bytes)",""),
+                  r.get("Dimensiones",""), r.get("Enlaces de entrada de imágenes","")] for r in over100]
+            )
+        # Imágenes — sin ALT (both Falta texto ALT and Falta atributo ALT)
+        # If "Texto ALT" column exists and is empty, or if Enlaces de entrada de imágenes exists with high count
+        sin_alt = [r for r in rows if not (r.get("Texto ALT") or "").strip() 
+                   or r.get("Enlaces de entrada de imágenes") and not (r.get("Texto ALT") or "").strip()]
+        if sin_alt:
+            results["Imágenes sin ALT text"] = (
+                ["Dirección", "Tipo", "# páginas donde aparece"],
+                [[r.get("Dirección",""), r.get("Tipo de contenido",""),
+                  r.get("Enlaces de entrada de imágenes","")] for r in sin_alt]
+            )
+        # Imágenes — sin atributo tamaño
+        sin_size = [r for r in rows if not r.get("Dimensiones") or r.get("Dimensiones") in ("", "None", None)]
+        if sin_size:
+            results["Imágenes sin atributo tamaño"] = (
+                ["Dirección", "Tipo", "Dimensiones"],
+                [[r.get("Dirección",""), r.get("Tipo de contenido",""), r.get("Dimensiones","")] for r in sin_size]
             )
     
     return results
