@@ -413,6 +413,24 @@ def _sample_detect(fpath: Path) -> str | None:
                     return "PS Mejorar entrega imágenes"
             return None
     
+    # --- Images Todo (mixed data check) ---
+    if frozenset(["Dirección", "Dimensiones", "Tipo de contenido", "Enlaces de entrada de imágenes"]).issubset(cols):
+        sizes = [_int_val(r, "Tamaño (Bytes)") for r in sample if _int_val(r, "Tamaño (Bytes)") > 0]
+        if sizes:
+            over = [s for s in sizes if s > 100000]
+            under = [s for s in sizes if s <= 100000]
+            if over and under:
+                return "__derive_images"
+        # Without size, check if mixed ALT/Dimensions
+        alts_good = [r for r in sample if (r.get("Texto ALT") or "").strip()]
+        alts_bad = [r for r in sample if not (r.get("Texto ALT") or "").strip()]
+        dims_good = [r for r in sample if r.get("Dimensiones")]
+        dims_bad = [r for r in sample if not r.get("Dimensiones")]
+        has_mix = (alts_good and alts_bad) or (dims_good and dims_bad)
+        if has_mix:
+            return "__derive_images"
+        return "Imágenes +100kb"  # All large → filter export
+    
     return None
 
 
@@ -425,8 +443,7 @@ ELEMENT_FINGERPRINTS = {
     "title": frozenset(["Dirección", "Título 1", "Longitud del título 1", "Ancho de píxeles del título 1"]),
     "meta": frozenset(["Dirección", "Meta description 1", "Longitud de la meta description 1", "Ancho de píxeles de la meta description 1"]),
     "h1": frozenset(["Dirección", "H1-1", "Longitud de H1-1"]),
-    # "images" fingerprint NOT auto-detected — too ambiguous with filtered exports
-    # Images Todo derivation only runs via explicit __derive_images dropdown
+    "images": frozenset(["Dirección", "Dimensiones", "Tipo de contenido", "Enlaces de entrada de imágenes"]),
 }
 
 def _detect_element_type(columns: frozenset) -> str | None:
@@ -1086,6 +1103,12 @@ def build_audit(data_dir: str, xlsx_path: str, pptx_path: str = None,
         
         if not all_rows:
             continue
+        
+        # For images: only derive if data is mixed (Todo, not a filter export)
+        if elem_type == "images":
+            detected = _sample_detect(fpath)
+            if not detected or detected != "__derive_images":
+                continue  # Skip — this is a filtered export, not Todo
         
         # Filter by domain and dedup
         all_rows = _filter_by_domain(all_rows, domain)
