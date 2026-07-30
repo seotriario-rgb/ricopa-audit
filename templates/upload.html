@@ -65,11 +65,10 @@
             </form>
 
             <div class="instructions">
-                <strong>¿Qué archivos incluir en el ZIP?</strong><br>
-                Todos los archivos <code>.ndjson</code> exportados de Screaming Frog para el cliente, por ejemplo:<br>
-                <code>errors_4xx.ndjson</code>, <code>redirects_3xx.ndjson</code>, <code>title_largo.ndjson</code>,<br>
-                <code>ps_report_minificar_js.ndjson</code>, <code>ps_report_fuentes.ndjson</code>,<br>
-                <code>noindex.ndjson</code>, <code>nofollow.ndjson</code>, <code>img_sin_alt.ndjson</code>, etc.<br><br>
+                <strong>¿Qué incluir en el ZIP?</strong><br>
+                Todos los archivos CSV exportados de Screaming Frog. El sistema <strong>detecta automáticamente</strong> a qué hoja pertenece cada archivo por sus columnas (sin importar el nombre).<br><br>
+                Para archivos ambiguos, incluye un <code>mapping.json</code> con las asignaciones:<br>
+                <code>{"Reporte_Enlaces.csv": "Errores 404", "mi_falta.csv": "Metatítulo — Falta"}</code><br><br>
                 También puedes incluir <code>rows_metadatos.json</code> para la hoja de metadatos propuestos.
             </div>
         </div>

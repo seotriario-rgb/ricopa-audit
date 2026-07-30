@@ -3,17 +3,22 @@
 Core logic for building RICOPA SEO audit deliverables (Excel + PowerPoint).
 Importable module — no CLI dependency. Called by main.py (FastAPI).
 
+v2: Auto-detects CSV/NDJSON files by column signatures.
+    Falls back to filename hints for ambiguous cases.
+    Supports mapping.json for training custom file→sheet assignments.
+
 Usage:
     from build_audit import build_audit
-    summary = build_audit(data_dir="path/to/ndjsons",
-                          xlsx="output.xlsx",
-                          pptx="output.pptx",
-                          client="Avafin",
-                          domain="avafin.mx")
+    result = build_audit(data_dir="path/to/files",
+                         xlsx="output.xlsx",
+                         pptx="output.pptx",
+                         client="Avafin",
+                         domain="avafin.mx",
+                         mapping={"mi_archivo.csv": "Errores 404"})
 """
 
 from __future__ import annotations
-import sys, os, json, re, shutil
+import sys, os, json, re, shutil, csv
 from pathlib import Path
 from urllib.parse import urlparse
 from datetime import date
@@ -31,7 +36,9 @@ METADATA_FILL_A = PatternFill("solid", fgColor="FFF7E6")
 METADATA_FILL_B = PatternFill("solid", fgColor="E6F4FF")
 
 
-# ---------- Excel helpers ----------
+# ======================================================================
+# Excel helpers
+# ======================================================================
 
 def _load_wb(path: str) -> openpyxl.Workbook:
     return openpyxl.load_workbook(path)
@@ -61,7 +68,9 @@ def _fill_sheet(wb, name: str, headers: list[str], rows: list[list]) -> int:
     return n
 
 
-# ---------- Metadatos propuestos ----------
+# ======================================================================
+# Metadatos propuestos
+# ======================================================================
 
 def _fill_metadatos_propuestos(wb, rows: list[list]) -> None:
     name = "Metadatos propuestos"
@@ -87,7 +96,9 @@ def _fill_metadatos_propuestos(wb, rows: list[list]) -> None:
     ws.column_dimensions["D"].width = 60
 
 
-# ---------- PowerPoint helpers ----------
+# ======================================================================
+# PowerPoint helpers
+# ======================================================================
 
 def _set_ppt_hallazgo(pptx_path: str, slide_index_1based: int, shape_substr: str,
                       count: int, excel_filename: str, sheet_name: str) -> int:
@@ -132,22 +143,83 @@ def _set_ppt_hallazgo(pptx_path: str, slide_index_1based: int, shape_substr: str
     return n_edited
 
 
-# ---------- Data processing ----------
+# ======================================================================
+# Data processing
+# ======================================================================
 
-def _read_ndjson(path: Path) -> list[dict]:
+def _read_file(path: Path) -> list[dict]:
+    """Auto-detect NDJSON or CSV, return list of dicts."""
     rows = []
     if not path.exists():
         return rows
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
+    ext = path.suffix.lower()
+    
+    if ext == ".ndjson" or ext == ".jsonl":
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    elif ext == ".csv":
+        for encoding in ["utf-8-sig", "utf-8", "latin-1"]:
             try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError:
+                with open(path, encoding=encoding, newline="") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        clean = {}
+                        for k, v in row.items():
+                            clean[k.strip()] = v.strip() if isinstance(v, str) else v
+                        rows.append(clean)
+                if rows:
+                    break
+            except (UnicodeDecodeError, csv.Error):
                 continue
+    elif ext == ".json":
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, list):
+                rows = data
+            else:
+                rows = [data]
     return rows
+
+
+def _get_columns(path: Path) -> frozenset:
+    """Read the column headers from a file without loading all rows."""
+    if not path.exists():
+        return frozenset()
+    ext = path.suffix.lower()
+    
+    if ext == ".ndjson":
+        rows = _read_file(path)
+        if rows and isinstance(rows[0], dict):
+            return frozenset(rows[0].keys())
+        return frozenset()
+    
+    if ext == ".csv":
+        for encoding in ["utf-8-sig", "utf-8", "latin-1"]:
+            try:
+                with open(path, encoding=encoding, newline="") as f:
+                    reader = csv.reader(f)
+                    headers_raw = next(reader, [])
+                    headers = frozenset(h.strip() for h in headers_raw if h.strip())
+                    return headers
+            except (UnicodeDecodeError, csv.Error):
+                continue
+        return frozenset()
+    
+    if ext == ".json":
+        rows = _read_file(path)
+        if rows and isinstance(rows[0], dict):
+            return frozenset(rows[0].keys())
+        return frozenset()
+    
+    return frozenset()
+
 
 def _filter_by_domain(rows: list[dict], domain: str, key: str = "Dirección") -> list[dict]:
     if not domain:
@@ -162,6 +234,7 @@ def _filter_by_domain(rows: list[dict], domain: str, key: str = "Dirección") ->
             result.append(r)
     return result
 
+
 def _dedup_by_key(rows: list[dict], key: str = "Dirección") -> list[dict]:
     seen = set()
     result = []
@@ -174,85 +247,343 @@ def _dedup_by_key(rows: list[dict], key: str = "Dirección") -> list[dict]:
     return result
 
 
-# ---------- Sheet specs ----------
+# ======================================================================
+# Column signatures → sheet name detection
+# ======================================================================
+# Each entry: signature (frozenset of columns) → (sheet_name, headers, col_map)
+# col_map maps source columns → output columns (None = skip)
 
-SHEETS_SPEC = [
-    ("Errores 404", "errors_4xx.ndjson",
-     ["URL", "Código", "Tipo Contenido", "URL de redirección", "Tipo redirección"],
-     ["Dirección", "Respuesta", "Tipo de contenido", "URL de redirección", "Tipo de redirección"]),
-    ("URLs no ASCII", "urls_no_ascii.ndjson",
-     ["URL", "Indexabilidad"],
-     ["Dirección", "Indexabilidad"]),
-    ("Metatítulo — Falta", "title_falta.ndjson",
-     ["URL", "Indexabilidad"],
-     ["Dirección", "Indexabilidad"]),
-    ("Metatítulo — Duplicado", "title_dup.ndjson",
-     ["URL", "Título", "Repeticiones"],
-     ["Dirección", "Título 1", "Repeticiones"]),
-    ("Metatítulo — Múltiple", "title_multiple.ndjson",
-     ["URL", "Títulos"],
-     ["Dirección", "Título 1"]),
-    ("Metatítulo — Largo", "title_largo.ndjson",
-     ["URL", "Título", "Caracteres", "Píxeles"],
-     ["Dirección", "Título 1", "Longitud del título 1", "Ancho de píxeles del título 1"]),
-    ("Metatítulo — Corto", "title_corto.ndjson",
-     ["URL", "Título", "Caracteres", "Píxeles"],
-     ["Dirección", "Título 1", "Longitud del título 1", "Ancho de píxeles del título 1"]),
-    ("Metadescripción — Falta", "meta_falta.ndjson",
-     ["URL", "Indexabilidad"],
-     ["Dirección", "Indexabilidad"]),
-    ("Metadescripción — Duplicada", "meta_dup.ndjson",
-     ["URL", "Metadescripción", "Repeticiones"],
-     ["Dirección", "Meta description 1", "Repeticiones"]),
-    ("Metadescripción — Larga", "meta_larga.ndjson",
-     ["URL", "Metadescripción", "Caracteres", "Píxeles"],
-     ["Dirección", "Meta description 1", "Longitud de la meta description 1", "Ancho de píxeles de la meta description 1"]),
-    ("Metadescripción — Corta", "meta_corta.ndjson",
-     ["URL", "Metadescripción", "Caracteres", "Píxeles"],
-     ["Dirección", "Meta description 1", "Longitud de la meta description 1", "Ancho de píxeles de la meta description 1"]),
-    ("Metadescripción — Múltiple", "meta_multiple.ndjson",
-     ["URL", "Metadescripciones"],
-     ["Dirección", "Meta description 1"]),
-    ("H1 — Falta", "h1_falta.ndjson",
-     ["URL", "Indexabilidad"],
-     ["Dirección", "Indexabilidad"]),
-    ("H1 — Múltiple", "h1_multiple.ndjson",
-     ["URL", "H1s"],
-     ["Dirección", "H1-1"]),
-    ("H1 — Duplicado", "h1_dup.ndjson",
-     ["URL", "H1", "Repeticiones"],
-     ["Dirección", "H1-1", "Repeticiones"]),
-    ("H1 — Largo (+70)", "h1_largo.ndjson",
-     ["URL", "H1"],
-     ["Dirección", "H1-1"]),
-    ("Poco contenido", "poco_contenido.ndjson",
-     ["URL", "Indexabilidad"],
-     ["Dirección", "Indexabilidad"]),
-    ("Imágenes +100kb", "img_over_100kb.ndjson",
-     ["URL imagen", "Tipo", "Tamaño (kB)", "Dimensiones", "# enlaces entrada"],
-     ["Dirección", "Tipo de contenido", "Tamaño (Bytes)", "Dimensiones", "Enlaces de entrada de imágenes"]),
-    ("Imágenes sin ALT text", "img_sin_alt.ndjson",
-     ["URL imagen", "Tipo", "# páginas donde aparece"],
-     ["Dirección", "Tipo de contenido", "Enlaces de entrada de imágenes"]),
-    ("Imágenes sin atributo tamaño", "img_sin_size.ndjson",
-     ["URL imagen", "Tipo", "Dimensiones"],
-     ["Dirección", "Tipo de contenido", "Dimensiones"]),
-    ("Imágenes dim incorrectas", "img_dim_incorrectas.ndjson",
-     ["URL imagen", "Dimensiones declaradas", "Tipo"],
-     ["Dirección", "Dimensiones", "Tipo de contenido"]),
-    ("Canónica — Falta", "can_falta.ndjson",
-     ["URL", "Indexabilidad"],
-     ["Dirección", "Indexabilidad"]),
-    ("Canónica — Múltiple", "can_multiple.ndjson",
-     ["URL", "Canónicas"],
-     ["Dirección", "Elemento de enlace canónico 1"]),
-    ("Redirecciones 3xx", "redirects_3xx.ndjson",
-     ["URL", "Código", "URL destino", "Tipo", "Enlaces internos"],
-     ["Dirección", "Respuesta", "URL de redirección", "Tipo de redirección", "Enlaces internos"]),
-    ("URLs HTTP (no HTTPS)", "urls_http.ndjson",
-     ["URL", "Tipo"],
-     ["Dirección", None]),
-]
+SIGNATURES = {}
+
+def _register(columns, sheet_name, headers, col_map):
+    key = frozenset(columns)
+    # Multiple sheets can have the same signature (e.g., all "Falta" exports share Dirección,Indexabilidad)
+    entry = {"sheet": sheet_name, "headers": headers, "col_map": col_map}
+    if key not in SIGNATURES:
+        SIGNATURES[key] = []
+    SIGNATURES[key].append(entry)
+
+# --- Signatures from SEO element exports ---
+_register(["Dirección", "Respuesta", "Tipo de contenido", "URL de redirección", "Tipo de redirección"],
+          "Errores 404", 
+          ["URL", "Código", "Tipo Contenido", "URL de redirección", "Tipo redirección"],
+          ["Dirección", "Respuesta", "Tipo de contenido", "URL de redirección", "Tipo de redirección"])
+
+_register(["Dirección", "Respuesta", "URL de redirección", "Tipo de redirección", "Enlaces internos"],
+          "Redirecciones 3xx",
+          ["URL", "Código", "URL destino", "Tipo", "Enlaces internos"],
+          ["Dirección", "Respuesta", "URL de redirección", "Tipo de redirección", "Enlaces internos"])
+
+_register(["Dirección", "Indexabilidad"],  # ambiguous: title_falta, meta_falta, h1_falta, can_falta
+          None, None, None)  # resolved by filename hints
+
+# Individual "Falta" sheets all share the same columns, registered for hint-based detection
+_register(["Dirección", "Indexabilidad"], "Metatítulo — Falta", ["URL", "Indexabilidad"], ["Dirección", "Indexabilidad"])
+_register(["Dirección", "Indexabilidad"], "Metadescripción — Falta", ["URL", "Indexabilidad"], ["Dirección", "Indexabilidad"])
+_register(["Dirección", "Indexabilidad"], "H1 — Falta", ["URL", "Indexabilidad"], ["Dirección", "Indexabilidad"])
+_register(["Dirección", "Indexabilidad"], "Canónica — Falta", ["URL", "Indexabilidad"], ["Dirección", "Indexabilidad"])
+_register(["Dirección", "Indexabilidad"], "Poco contenido", ["URL", "Indexabilidad"], ["Dirección", "Indexabilidad"])
+_register(["Dirección", "Indexabilidad"], "URLs no ASCII", ["URL", "Indexabilidad"], ["Dirección", "Indexabilidad"])
+
+_register(["Dirección"],  # data-only export, no indexability info
+          None, None, None)  # resolved by filename hints
+
+# Individual Dirección-only entries for hint matching
+_register(["Dirección"], "Canónica — Múltiple", ["URL", "Canónicas"], ["Dirección", None])
+_register(["Dirección"], "Canónica — Errores", ["URL", "Tipo problema", "Canónica", "Estado"], ["Dirección", None])
+_register(["Dirección"], "PS Minificar JS", ["URL", "Ahorro (ms)"], ["Dirección", None])
+_register(["Dirección"], "PS Minificar CSS", ["URL", "Ahorro (ms)"], ["Dirección", None])
+_register(["Dirección"], "PS Visualización fuentes", ["URL", "Ahorro (ms)"], ["Dirección", None])
+_register(["Dirección"], "PS Mejorar entrega imágenes", ["URL", "URL imagen", "Ahorro"], ["Dirección", None])
+_register(["Dirección"], "PS Solicitudes LCP", ["URL", "Elemento", "Tipo LCP"], ["Dirección", None])
+_register(["Dirección"], "PageSpeed — CLS", ["URL", "Elemento", "Puntuación CLS"], ["Dirección", None])
+
+_register(["Dirección", "Título 1", "Longitud del título 1", "Ancho de píxeles del título 1"],
+          "Metatítulo — Largo",
+          ["URL", "Título", "Caracteres", "Píxeles"],
+          ["Dirección", "Título 1", "Longitud del título 1", "Ancho de píxeles del título 1"])
+
+_register(["Dirección", "Título 1", "Longitud del título 1", "Ancho de píxeles del título 1"],
+          "Metatítulo — Corto",
+          ["URL", "Título", "Caracteres", "Píxeles"],
+          ["Dirección", "Título 1", "Longitud del título 1", "Ancho de píxeles del título 1"])
+
+_register(["Dirección", "Título 1", "Repeticiones"],
+          "Metatítulo — Duplicado",
+          ["URL", "Título", "Repeticiones"],
+          ["Dirección", "Título 1", "Repeticiones"])
+
+_register(["Dirección", "Meta description 1", "Longitud de la meta description 1", "Ancho de píxeles de la meta description 1"],
+          "Metadescripción — Larga",
+          ["URL", "Metadescripción", "Caracteres", "Píxeles"],
+          ["Dirección", "Meta description 1", "Longitud de la meta description 1", "Ancho de píxeles de la meta description 1"])
+
+_register(["Dirección", "Meta description 1", "Repeticiones"],
+          "Metadescripción — Duplicada",
+          ["URL", "Metadescripción", "Repeticiones"],
+          ["Dirección", "Meta description 1", "Repeticiones"])
+
+_register(["Dirección", "H1-1", "Repeticiones"],
+          "H1 — Duplicado",
+          ["URL", "H1", "Repeticiones"],
+          ["Dirección", "H1-1", "Repeticiones"])
+
+_register(["Dirección", "H1-1", "Longitud de H1-1"],
+          "H1 — Largo (+70)",
+          ["URL", "H1", "Caracteres"],
+          ["Dirección", "H1-1", "Longitud de H1-1"])
+
+_register(["Dirección", "H1-1"],
+          None, None, None)  # ambiguous: h1_multi or h1_largo page export, use filename hint
+
+_register(["Dirección", "Tipo de contenido", "Tamaño (Bytes)", "Dimensiones", "Enlaces de entrada de imágenes"],
+          "Imágenes +100kb",
+          ["URL imagen", "Tipo", "Tamaño (kB)", "Dimensiones", "# enlaces entrada"],
+          ["Dirección", "Tipo de contenido", "Tamaño (Bytes)", "Dimensiones", "Enlaces de entrada de imágenes"])
+
+_register(["Dirección", "Tipo de contenido", "Enlaces de entrada de imágenes"],
+          "Imágenes sin ALT text",
+          ["URL imagen", "Tipo", "# páginas donde aparece"],
+          ["Dirección", "Tipo de contenido", "Enlaces de entrada de imágenes"])
+
+_register(["Dirección", "Tipo de contenido", "Dimensiones"],
+          "Imágenes sin atributo tamaño",
+          ["URL imagen", "Tipo", "Dimensiones"],
+          ["Dirección", "Tipo de contenido", "Dimensiones"])
+
+_register(["Dirección", "Elemento de enlace canónico 1"],
+          "Canónica — Múltiple",
+          ["URL", "Canónicas"],
+          ["Dirección", "Elemento de enlace canónico 1"])
+
+_register(["Dirección", "Indexabilidad", "Estado de indexabilidad"],
+          "Canónica — Errores",
+          ["URL", "Tipo problema", "Canónica", "Estado"],
+          ["Dirección", None, "Elemento de enlace canónico 1", "Estado de indexabilidad"])
+
+# --- Signatures from bulk exports ---
+_register(["Tipo", "Fuente", "Destino", "Tamaño (bytes)", "Ancla", "Código de estado"],
+          None, None, None)  # generic bulk export, resolved by specific subsets
+
+_register(["Fuente", "Destino", "Tamaño (bytes)"],
+          "Detalle Imágenes +100kb",
+          ["URL imagen", "Tamaño (kB)", "URL donde aparece"],
+          ["Destino", "Tamaño (bytes)", "Fuente"])
+
+_register(["Fuente", "Destino", "Texto ALT", "Ancla"],
+          "Detalle Imágenes sin ALT",
+          ["URL imagen", "URL página", "Texto ancla"],
+          ["Destino", "Fuente", "Ancla"])
+
+_register(["Fuente", "Destino"],
+          "Detalle Imágenes sin size attr",
+          ["URL imagen", "URL página"],
+          ["Destino", "Fuente"])
+
+_register(["Fuente", "Destino", "Texto ALT", "Longitud", "Tipo de ruta", "Posición del enlace", "Origen del enlace"],
+          None, None, None)  # ambiguous: noindex/nofollow, resolve by dir name
+
+_register(["Fuente", "Destino", "Ancla"],
+          None, None, None)  # ambiguous
+
+# --- Signatures from PageSpeed reports ---
+_register(["Página fuente", "URL", "Tamaño (bytes)", "Posible ahorro (bytes)"],
+          "PS Minificar JS",
+          ["URL Página", "Archivo JS a minificar", "Tamaño (bytes)", "Ahorro estimado (bytes)"],
+          ["Página fuente", "URL", "Tamaño (bytes)", "Posible ahorro (bytes)"])
+
+_register(["Página fuente", "URL", "Posible ahorro (bytes)", "Motivo"],
+          "PS Mejorar entrega imágenes",
+          ["URL Página", "Imagen a optimizar", "Tamaño (bytes)", "Ahorro (bytes)", "Motivo"],
+          ["Página fuente", "URL", "Tamaño (bytes)", "Posible ahorro (bytes)", "Motivo"])
+
+_register(["Página fuente", "URL", "Posible ahorro (ms)"],
+          "PS Visualización fuentes",
+          ["URL Página", "Archivo de fuente", "Ahorro (ms)"],
+          ["Página fuente", "URL", "Posible ahorro (ms)"])
+
+_register(["Página fuente", "Selector", "Carga diferida no aplicada", 'Se ha de aplicar "fetchpriority=high"', "La solicitud es detectable en el documento inicial"],
+          "PS Solicitudes LCP",
+          ["URL Página", "Selector LCP", "Carga diferida", "fetchpriority=high", "Detectable inicial"],
+          ["Página fuente", "Selector", "Carga diferida no aplicada", 'Se ha de aplicar "fetchpriority=high"', "La solicitud es detectable en el documento inicial"])
+
+_register(["Página fuente", "Etiqueta", "Contribución de CLS", "Recortes"],
+          "PageSpeed — CLS",
+          ["URL Página", "Elemento causante", "Contribución CLS", "Fragmento HTML"],
+          ["Página fuente", "Etiqueta", "Contribución de CLS", "Recortes"])
+
+# --- Detalle 404 ---
+_register(["URL 404", "URL Origen", "Texto ancla"],
+          "Detalle Errores 404",
+          ["URL 404", "URL Origen", "Texto ancla"],
+          ["URL 404", "URL Origen", "Texto ancla"])
+
+
+# Filename hints for ambiguous signatures (Dirección + Indexabilidad, Fuente + Destino + Ancla, etc.)
+FILENAME_HINTS = {
+    "title_falta": "Metatítulo — Falta",
+    "title_dup": "Metatítulo — Duplicado",
+    "title_multiple": "Metatítulo — Múltiple",
+    "title_largo": "Metatítulo — Largo",
+    "title_corto": "Metatítulo — Corto",
+    "title_h1": "Metatítulo = H1",
+    "meta_falta": "Metadescripción — Falta",
+    "meta_dup": "Metadescripción — Duplicada",
+    "meta_larga": "Metadescripción — Larga",
+    "meta_corta": "Metadescripción — Corta",
+    "meta_multiple": "Metadescripción — Múltiple",
+    "h1_falta": "H1 — Falta",
+    "h1_dup": "H1 — Duplicado",
+    "h1_multiple": "H1 — Múltiple",
+    "h1_largo": "H1 — Largo (+70)",
+    "can_falta": "Canónica — Falta",
+    "can_multiple": "Canónica — Múltiple",
+    "can_errores": "Canónica — Errores",
+    "canónica_múltiple": "Canónica — Múltiple",
+    "canónica_errores": "Canónica — Errores",
+    "poco_contenido": "Poco contenido",
+    "urls_no_ascii": "URLs no ASCII",
+    "urls_http": "URLs HTTP (no HTTPS)",
+    "img_over_100kb": "Imágenes +100kb",
+    "img_over_100kb_detalle": "Detalle Imágenes +100kb",
+    "img_sin_alt": "Imágenes sin ALT text",
+    "img_sin_alt_detalle": "Detalle Imágenes sin ALT",
+    "img_sin_size": "Imágenes sin atributo tamaño",
+    "img_sin_size_detalle": "Detalle Imágenes sin size attr",
+    "img_dim_incorrectas": "Imágenes dim incorrectas",
+    "img_dim_incorrectas_detalle": "Detalle Img dim incorrectas",
+    "noindex": "Directivas — Noindex",
+    "nofollow": "Directivas — Nofollow",
+    "errores_404": "Errores 404",
+    "errors_4xx": "Errores 404",
+    "detalle_errores_404": "Detalle Errores 404",
+    "redirects_3xx": "Redirecciones 3xx",
+    "redireccion": "Redirecciones 3xx",
+    "bucles_cadena": "Bucles y cadenas redirección",
+    "ps_minificar_js": "PS Minificar JS",
+    "ps_minificar_css": "PS Minificar CSS",
+    "ps_fuentes": "PS Visualización fuentes",
+    "ps_visualizacion": "PS Visualización fuentes",
+    "ps_visualización": "PS Visualización fuentes",
+    "ps_mejorar_img": "PS Mejorar entrega imágenes",
+    "ps_mejorar_entrega": "PS Mejorar entrega imágenes",
+    "ps_lcp": "PS Solicitudes LCP",
+    "ps_solicitudes_lcp": "PS Solicitudes LCP",
+    "ps_cls": "PageSpeed — CLS",
+    "pagespeed_cls": "PageSpeed — CLS",
+    "ps_report_fuentes": "PS Visualización fuentes",
+    "ps_report_minificar": "PS Minificar JS",
+    "ps_report_mejorar": "PS Mejorar entrega imágenes",
+    "ps_report_lcp": "PS Solicitudes LCP",
+    "ps_report_cls": "PageSpeed — CLS",
+}
+
+
+def _hint_from_filename(fname: str) -> str | None:
+    """Try to guess sheet name from filename substring hints."""
+    fname_lower = fname.lower().replace(".csv", "").replace(".ndjson", "").replace(" ", "_").replace("-", "_")
+    for hint, sheet in FILENAME_HINTS.items():
+        if hint in fname_lower:
+            return sheet
+    return None
+
+
+def _detect_assignments(data_dir: str, mapping: dict = None) -> tuple[dict[str, tuple[list[str], list[str], str]], list[dict]]:
+    """
+    Scan data_dir for CSV/NDJSON files, detect their sheet assignment.
+    
+    Returns: (assignments, unmatched)
+        assignments: sheet_name → (headers, col_map, file_path)
+        unmatched: [{file, columns, hint}] for files that couldn't be auto-assigned
+    """
+    data_dir = Path(data_dir)
+    mapping = mapping or {}
+    assignments = {}
+    unmatched = []
+    processed_files = set()  # filenames already assigned
+    
+    # Build reverse mapping: filename → sheet_name from mapping
+    reverse_map = {}
+    for fname, sheet in (mapping or {}).items():
+        reverse_map[fname.strip().lower()] = sheet
+    
+    # Find all data files
+    data_files = []
+    for ext in [".csv", ".ndjson", ".json"]:
+        data_files.extend(data_dir.glob(f"*{ext}"))
+    # Flatten: if files are in subdirs, move consideration to root
+    for root, dirs, fnames in os.walk(data_dir):
+        for fname in fnames:
+            fpath = Path(root) / fname
+            if fpath not in data_files and fpath.suffix.lower() in [".csv", ".ndjson", ".json"]:
+                data_files.append(fpath)
+    
+    for fpath in sorted(data_files):
+        fname = fpath.name
+        if fname.startswith(".") or fname.startswith("__"):
+            continue
+        
+        cols = _get_columns(fpath)
+        if not cols:
+            continue
+        
+        assignment = None
+        
+        # 1. Check mapping.json
+        for key, sheet in reverse_map.items():
+            if key in fname.lower():
+                # Find the signature for this sheet
+                for sig, entries in SIGNATURES.items():
+                    for e in entries:
+                        if e["sheet"] == sheet:
+                            assignment = (sheet, e["headers"], e["col_map"], str(fpath))
+                            break
+                    if assignment:
+                        break
+                if assignment:
+                    break
+        
+        # 2. Check column signatures
+        if not assignment:
+            entries = SIGNATURES.get(cols, [])
+            unique_entries = [e for e in entries if e["sheet"] is not None]
+            if len(unique_entries) == 1:
+                e = unique_entries[0]
+                assignment = (e["sheet"], e["headers"], e["col_map"], str(fpath))
+            elif len(unique_entries) > 1:
+                # Multiple sheets match same columns — try filename hint
+                hint = _hint_from_filename(fname)
+                if hint:
+                    for e in unique_entries:
+                        if e["sheet"] == hint:
+                            assignment = (e["sheet"], e["headers"], e["col_map"], str(fpath))
+                            break
+        
+        # 3. Try filename hint for any unmatched (direct match, no signature needed)
+        if not assignment:
+            hint = _hint_from_filename(fname)
+            if hint:
+                first_col = sorted(cols)[0] if cols else "Dirección"
+                assignment = (hint, ["URL"], [first_col], str(fpath))
+        
+        if assignment:
+            sheet_name, headers, col_map, path = assignment
+            if sheet_name not in assignments:
+                assignments[sheet_name] = (headers, col_map, path)
+                processed_files.add(fname)
+        else:
+            unmatched.append({
+                "file": fname,
+                "columns": sorted(cols),
+                "path": str(fpath),
+            })
+    
+    return assignments, unmatched
+
+
+# ======================================================================
+# Sheet ordering & Resumen
+# ======================================================================
 
 RESUMEN_SPEC = [
     ("¿Hay URLs con respuesta 4XX?", "Errores 404", "Rastreo"),
@@ -351,26 +682,56 @@ def _reorder_sheets(wb):
             wb.move_sheet(name, offset=i - idx)
 
 
-# ---------- Main entry point ----------
+# ======================================================================
+# Main entry point
+# ======================================================================
 
 def build_audit(data_dir: str, xlsx_path: str, pptx_path: str = None,
                 client: str = "", domain: str = "",
-                skip_ppt: bool = False, skip_metadatos: bool = True) -> dict:
+                skip_ppt: bool = False, skip_metadatos: bool = True,
+                mapping: dict = None) -> dict:
     """
-    Main function: reads NDJSONs from data_dir, builds Excel + PPT.
-    Returns dict with sheet_name → count for all sheets.
+    Main function: reads data from data_dir, builds Excel + PPT.
+    Auto-detects file→sheet assignments by column signatures.
+    
+    Returns: {"counts": {sheet: n}, "unmatched": [...], "total": N}
     """
     data_dir = Path(data_dir)
     wb = _load_wb(xlsx_path)
     counts = {}
+    unmatched = []
 
-    # 1. Populate main sheets from SEO element NDJSONs
-    for sheet_name, ndjson_file, headers, col_map in SHEETS_SPEC:
-        ndjson_path = data_dir / ndjson_file
-        rows_raw = _read_ndjson(ndjson_path)
+    # 1. Detect assignments
+    assignments, unmatched = _detect_assignments(str(data_dir), mapping)
+    
+    # Ensure all known sheets have a placeholder
+    all_known_sheets = set()
+    for sig, entries in SIGNATURES.items():
+        for e in entries:
+            if e["sheet"]:
+                all_known_sheets.add(e["sheet"])
+    all_known_sheets.update({
+        "Bucles y cadenas redirección", "Metatítulo = H1", "Detalle Img dim incorrectas",
+        "URLs HTTP (no HTTPS)", "Metadescripción — Falta", "H1 — Falta",
+        "Canónica — Falta", "Directivas — Noindex", "Directivas — Nofollow",
+        "PS Minificar CSS", "Metadescripción — Corta", "Metadescripción — Múltiple",
+        "H1 — Múltiple", "Metatítulo — Múltiple", "Canónica — Errores",
+        "Metadescripción — Duplicada",
+    })
+
+    # 2. Populate sheets from detected assignments
+    for sheet_name, (headers, col_map, file_path) in assignments.items():
+        rows_raw = _read_file(Path(file_path))
+        if not rows_raw:
+            _fill_sheet(wb, sheet_name, headers, [])
+            counts[sheet_name] = 0
+            continue
+
+        # Filter by domain (except for certain sheets)
         if sheet_name not in ("URLs HTTP (no HTTPS)",):
             rows_raw = _filter_by_domain(rows_raw, domain)
-        rows_raw = _dedup_by_key(rows_raw, "Dirección")
+
+        # Map columns
         rows_out = []
         for r in rows_raw:
             row = []
@@ -381,118 +742,24 @@ def build_audit(data_dir: str, xlsx_path: str, pptx_path: str = None,
                     val = r.get(key, "")
                     row.append(str(val) if val is not None else "")
             rows_out.append(row)
-        _fill_sheet(wb, sheet_name, headers, rows_out)
-        n = len(rows_out)
-        counts[sheet_name] = n
-
-    # 2. Detail sheets from bulk exports
-    detail_specs = [
-        ("Detalle Imágenes +100kb", "img_over_100kb_detalle.ndjson",
-         ["URL imagen", "Tamaño (kB)", "URL donde aparece", "Título de la página"],
-         ["Destino", "Tamaño (bytes)", "Fuente", None]),
-        ("Detalle Imágenes sin ALT", "img_sin_alt_detalle.ndjson",
-         ["URL imagen", "URL página", "Texto ancla"],
-         ["Destino", "Fuente", "Ancla"]),
-        ("Detalle Imágenes sin size attr", "img_sin_size_detalle.ndjson",
-         ["URL imagen", "URL página"],
-         ["Destino", "Fuente"]),
-    ]
-    for sheet_name, ndjson_file, headers, col_map in detail_specs:
-        ndjson_path = data_dir / ndjson_file
-        rows_raw = _read_ndjson(ndjson_path)
-        rows_raw = _filter_by_domain(rows_raw, domain, key="Fuente")
-        rows_out = [[str(r.get(k, "") or "") for k in col_map] for r in rows_raw]
+        
         _fill_sheet(wb, sheet_name, headers, rows_out)
         counts[sheet_name] = len(rows_out)
 
-    # 3. Detalle Errores 404 (special key "URL 404")
-    d404_ndjson = data_dir / "detalle_errores_404.ndjson"
-    if d404_ndjson.exists():
-        rows_raw = _read_ndjson(d404_ndjson)
-        rows_out = [[r.get("URL 404", ""), r.get("URL Origen", ""), r.get("Texto ancla", "") or ""] for r in rows_raw]
-        _fill_sheet(wb, "Detalle Errores 404", ["URL 404", "URL Origen", "Texto ancla"], rows_out)
-        counts["Detalle Errores 404"] = len(rows_out)
-    else:
-        _fill_sheet(wb, "Detalle Errores 404", ["URL 404", "URL Origen", "Texto ancla"], [])
-        counts["Detalle Errores 404"] = 0
-
-    # 4. Canónica sheets (bulk export with Dirección key)
-    for cname, cheaders, cfile in [
-        ("Canónica — Múltiple", ["URL", "Canónicas"], "canónica_múltiple.ndjson"),
-        ("Canónica — Errores", ["URL", "Tipo problema", "Canónica", "Estado"], "canónica_errores.ndjson"),
-    ]:
-        ndjson_path = data_dir / cfile
-        if ndjson_path.exists():
-            rows_raw = _read_ndjson(ndjson_path)
-            rows_raw = _dedup_by_key(rows_raw, "Dirección")
-            rows_out = [[r.get("Dirección", "")] + [""] * (len(cheaders) - 1) for r in rows_raw]
-            _fill_sheet(wb, cname, cheaders, rows_out)
-            counts[cname] = len(rows_out)
-        else:
-            _fill_sheet(wb, cname, cheaders, [])
-            counts[cname] = 0
-
-    # 5. PageSpeed sheets from sf_generate_report (file-level detail)
-    ps_report_sheets = [
-        ("PS Minificar JS", "ps_report_minificar_js.ndjson",
-         ["URL Página", "Archivo JS a minificar", "Tamaño (bytes)", "Ahorro estimado (bytes)"],
-         ["Página fuente", "URL", "Tamaño (bytes)", "Posible ahorro (bytes)"]),
-        ("PS Minificar CSS", "ps_report_minificar_css.ndjson",
-         ["URL Página", "Archivo CSS a minificar", "Tamaño (bytes)", "Ahorro estimado (bytes)"],
-         ["Página fuente", "URL", "Tamaño (bytes)", "Posible ahorro (bytes)"]),
-        ("PS Visualización fuentes", "ps_report_fuentes.ndjson",
-         ["URL Página", "Archivo de fuente", "Ahorro (ms)"],
-         ["Página fuente", "URL", "Posible ahorro (ms)"]),
-        ("PS Mejorar entrega imágenes", "ps_report_mejorar_img.ndjson",
-         ["URL Página", "Imagen a optimizar", "Tamaño (bytes)", "Ahorro (bytes)", "Motivo"],
-         ["Página fuente", "URL", "Tamaño (bytes)", "Posible ahorro (bytes)", "Motivo"]),
-        ("PS Solicitudes LCP", "ps_report_lcp.ndjson",
-         ["URL Página", "Selector LCP", "Carga diferida", "fetchpriority=high", "Detectable inicial"],
-         ["Página fuente", "Selector", "Carga diferida no aplicada", 'Se ha de aplicar "fetchpriority=high"', "La solicitud es detectable en el documento inicial"]),
-        ("PageSpeed — CLS", "ps_report_cls.ndjson",
-         ["URL Página", "Elemento causante", "Contribución CLS", "Fragmento HTML"],
-         ["Página fuente", "Etiqueta", "Contribución de CLS", "Recortes"]),
-    ]
-    for sheet_name, ndjson_file, headers, col_map in ps_report_sheets:
-        ndjson_path = data_dir / ndjson_file
-        rows_raw = _read_ndjson(ndjson_path)
-        if not rows_raw:
-            _fill_sheet(wb, sheet_name, headers, [])
+    # 3. Ensure remaining known sheets exist with "Sin hallazgos"
+    for sheet_name in sorted(all_known_sheets):
+        if sheet_name not in counts:
+            if sheet_name == "Metadatos propuestos":
+                _fill_sheet(wb, sheet_name, ["URL", "Factor a corregir", "Texto actual", "Propuesta"], [])
+            elif sheet_name == "Directivas — Noindex":
+                _fill_sheet(wb, sheet_name, ["URL", "Indexabilidad", "Estado de indexabilidad"], [])
+            elif sheet_name == "Directivas — Nofollow":
+                _fill_sheet(wb, sheet_name, ["URL", "Directivas"], [])
+            else:
+                _fill_sheet(wb, sheet_name, ["URL"], [])
             counts[sheet_name] = 0
-        else:
-            rows_out = [[str(r.get(k, "") or "") for k in col_map] for r in rows_raw]
-            _fill_sheet(wb, sheet_name, headers, rows_out)
-            counts[sheet_name] = len(rows_out)
 
-    # 6. Remaining empty sheets
-    empty_sheets = [
-        ("Bucles y cadenas redirección", ["URL", "Tipo (Bucle/Cadena)", "Código", "URL destino"]),
-        ("Metatítulo = H1", ["URL", "Título", "H1"]),
-        ("Detalle Img dim incorrectas", ["URL imagen", "URL página", "Dimensión declarada"]),
-    ]
-    for sheet_name, headers in empty_sheets:
-        _fill_sheet(wb, sheet_name, headers, [])
-        counts[sheet_name] = 0
-
-    # 7. Directivas (from bulk export NDJSONs)
-    for sheet_name, ndjson_file, headers in [
-        ("Directivas — Noindex", "noindex.ndjson", ["URL", "Indexabilidad", "Estado de indexabilidad"]),
-        ("Directivas — Nofollow", "nofollow.ndjson", ["URL", "Directivas"]),
-    ]:
-        ndjson_path = data_dir / ndjson_file
-        rows_raw = _read_ndjson(ndjson_path)
-        seen = set()
-        rows_out = []
-        for r in rows_raw:
-            url = r.get("Fuente", "")
-            if url in seen:
-                continue
-            seen.add(url)
-            rows_out.append([url, "", ""])
-        _fill_sheet(wb, sheet_name, headers, rows_out)
-        counts[sheet_name] = len(rows_out)
-
-    # 8. Metadatos propuestos (from rows_metadatos.json in data_dir)
+    # 4. Metadatos propuestos
     if not skip_metadatos:
         metadatos_json = data_dir / "rows_metadatos.json"
         if metadatos_json.exists():
@@ -500,16 +767,8 @@ def build_audit(data_dir: str, xlsx_path: str, pptx_path: str = None,
                 met_rows = json.load(f)
             _fill_metadatos_propuestos(wb, met_rows)
             counts["Metadatos propuestos"] = len(met_rows)
-        else:
-            _fill_sheet(wb, "Metadatos propuestos",
-                        ["URL", "Factor a corregir", "Texto actual", "Propuesta"], [])
-            counts["Metadatos propuestos"] = 0
-    else:
-        _fill_sheet(wb, "Metadatos propuestos",
-                    ["URL", "Factor a corregir", "Texto actual", "Propuesta"], [])
-        counts["Metadatos propuestos"] = 0
 
-    # 9. Rebuild Resumen
+    # 5. Rebuild Resumen
     ws_resumen = wb["Resumen"] if "Resumen" in wb.sheetnames else wb.create_sheet("Resumen")
     ws_resumen.delete_rows(1, ws_resumen.max_row)
     ws_resumen.append(["RICOPA", "FACTORES", "DESCRIPCIÓN DE FACTORES", "CANTIDAD", "VER"])
@@ -532,11 +791,11 @@ def build_audit(data_dir: str, xlsx_path: str, pptx_path: str = None,
         ver_cell.font = Font(color="0563C1", underline="single")
         current_cat = cat
 
-    # 10. Reorder & save
+    # 6. Reorder & save
     _reorder_sheets(wb)
     _save_wb(wb, xlsx_path)
 
-    # 11. PowerPoint
+    # 7. PowerPoint
     if not skip_ppt and pptx_path:
         excel_filename = os.path.basename(xlsx_path)
         prs = PptxPresentation(pptx_path)
@@ -593,4 +852,5 @@ def build_audit(data_dir: str, xlsx_path: str, pptx_path: str = None,
 
         prs.save(pptx_path)
 
-    return counts
+    total = sum(counts.values())
+    return {"counts": counts, "unmatched": unmatched, "total": total}
