@@ -10,7 +10,6 @@ from datetime import datetime
 
 from fastapi import FastAPI, File, Form, UploadFile, Request
 from fastapi.responses import HTMLResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
 
 from build_audit import build_audit
 
@@ -20,8 +19,6 @@ BASE_DIR = Path(__file__).parent
 TEMPLATES_DIR = BASE_DIR / "_plantillas"
 OUTPUT_DIR = BASE_DIR / "outputs"
 OUTPUT_DIR.mkdir(exist_ok=True)
-
-app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 
 @app.get("/", response_class=HTMLResponse)
